@@ -76,7 +76,7 @@ function applied(itemKey: string, posterUrls: string[], extra: Partial<AppliedRe
 function userSet(id: string, title: string, posters: PosterInfo[], extra: Partial<MediuxUserSet> = {}): MediuxUserSet
 {
   return {
-    id, setName: `${title} (2020) Set`, uploader: 'willtong93', posterCount: 0, backdropCount: 0, titleCardCount: 0,
+    id, source: 'mediux', setName: `${title} (2020) Set`, uploader: 'willtong93', posterCount: 0, backdropCount: 0, titleCardCount: 0,
     posters, title, year: 2020, mediaType: 'show', ...extra,
   }
 }

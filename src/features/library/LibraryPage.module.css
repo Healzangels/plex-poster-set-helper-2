@@ -799,6 +799,56 @@
 /* Multi-select filter chips - all three are on by default. No enclosing track,
    so they sit cleanly on the panel instead of inside a dark inset box. A chip
    is filled-gold when its type is shown and dimmed when it's hidden. */
+/* Which site's sets to show. Its own row above the uploader/type filters: it
+   selects a different axis (where art came from, not what it is). */
+.sourceToggles {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.sourceToggle {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--duration-fast), background var(--duration-fast), border-color var(--duration-fast);
+}
+
+.sourceToggle:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.sourceToggle:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.sourceToggleOn,
+.sourceToggleOn:hover {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent-border);
+  color: var(--color-accent-hover);
+}
+
+.sourceCount {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+}
+
 .typeToggles {
   display: flex;
   flex-wrap: wrap;
@@ -835,10 +885,14 @@
 .typeToggleOn:hover { background: var(--color-accent-soft-hover); }
 
 /* On a wider panel the dropdown and chips share one row, chips sized to content;
-   on a narrow panel they stack and the chips fill the row as equal thirds. */
+   on a narrow panel they stack and the chips fill the row as equal thirds. The
+   source chips keep their own full-width row at every size. */
 @container sets-panel (min-width: 460px) {
-  .filters { flex-direction: row; align-items: center; }
-  .filters > :first-child { flex: 1 1 auto; min-width: 0; }
+  .filters { flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .sourceToggles { flex: 1 0 100%; }
+  .sourceToggle { flex: 0 0 auto; }
+  /* The uploader dropdown - the element right after the source chips. */
+  .filters > .sourceToggles + * { flex: 1 1 auto; min-width: 0; }
   .typeToggles { flex: 0 0 auto; flex-wrap: nowrap; }
   .typeToggle { flex: 0 0 auto; }
 }
@@ -872,6 +926,22 @@
 .panelLoading { flex-direction: row; }
 .panelNotice p { margin: 0; }
 .noticeSub { font-size: var(--text-xs); opacity: 0.7; max-width: 100%; }
+
+/* A caveat that sits above real results instead of replacing them. */
+.panelInlineNotice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.panelInlineNotice svg { flex-shrink: 0; margin-top: 2px; }
 
 /* -- Set card -------------------------------------------------------------- */
 
@@ -1673,12 +1743,16 @@
   flex-shrink: 0;
 }
 
+/* Uploader, then the source badge, with any applied/match badge pushed right.
+   With no applied badge the source badge takes that trailing slot itself. */
 .setUploaderRow {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-2);
+  min-width: 0;
 }
+
+.setUploaderRow > :last-child { margin-left: auto; }
 
 .setCardChecked {
   border-color: var(--color-accent);

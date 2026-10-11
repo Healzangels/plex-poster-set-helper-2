@@ -205,6 +205,8 @@ More detail (unraid, ports, volumes) in the [Docker guide](docker/README.md#upda
 | **[MediUX](https://mediux.pro)** | Set links (`/sets/123`), **boxsets** (`/boxsets/123` - a whole collection at once), and creator pages (`/user/name`). Full‑quality artwork, including season posters, title cards, and backdrops. |
 | **[ThePosterDB](https://theposterdb.com)** | Set links (`/set/123`), single posters (`/poster/123`), and user uploads (`/user/name`). |
 
+The **Library Browser** searches both sites at once: pick a title and its MediUX and ThePosterDB sets appear side by side, each card tagged with where it came from, with chips to show just one site's sets. MediUX is looked up by TMDB ID; ThePosterDB has no public ID search, so it is matched on title and year - which means it still finds art for titles Plex has no TMDB ID for.
+
 Posters are matched to your library by **TMDB ID** (read from each Plex item), so the right art lands on the right title. For titles Plex stores without a TMDB ID (or under a TVDB/IMDb agent), a free **TMDB API key** in Settings restores ID‑based matching - otherwise the tool falls back to title and year, which can miss renamed or subtitled entries. Anime under the **HAMA** agent (which tags titles with an AniDB ID) is converted to TMDB automatically using the open-source [Fribb/anime-lists](https://github.com/Fribb/anime-lists) dataset (cached locally), no key required. Everything you apply is tracked locally, so the **Reset** page always knows what's current, what was applied before, and where it came from.
 
 ---

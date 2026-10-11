@@ -1,4 +1,10 @@
 import type { AppliedRecord } from '../../electron/ipc/types'
+import { setKey } from './posterGroups'
+
+/** Identity of the set a record came from, or null for manual uploads. */
+function recordSetKey(r: AppliedRecord): string | null {
+  return r.setId ? setKey({ id: r.setId, source: r.source }) : null
+}
 
 /**
  * Records an applied poster set in local history - the single source of truth
@@ -53,13 +59,13 @@ export function appliedKey(title: string, year?: number): string {
  * the Library Browser.
  */
 export interface AppliedIndex {
-  /** Every set ever applied (current or previously). */
-  setIds: Set<string>
+  /** Every set ever applied (current or previously), by setKey(). */
+  setKeys: Set<string>
   /** Any title (title|year) that has custom art, regardless of set/source. */
   titles: Set<string>
   /** Exact poster image URLs ever applied. */
   posterUrls: Set<string>
-  /** itemKey to the current set id (latest applied). */
+  /** itemKey to the current set's setKey() (latest applied). */
   currentByItem: Map<string, string>
   /** Poster URLs belonging to the current set per item. */
   currentPosterUrls: Set<string>
@@ -85,12 +91,13 @@ export async function loadAppliedIndex(): Promise<AppliedIndex> {
   const currentByItem = new Map<string, string>()
   const currentPosterUrls = new Set<string>()
   for (const [item, r] of latestPerItem) {
-    if (r.setId) currentByItem.set(item, r.setId)
+    const key = recordSetKey(r)
+    if (key) currentByItem.set(item, key)
     for (const u of r.posterUrls ?? []) currentPosterUrls.add(u)
   }
 
   return {
-    setIds: new Set(recs.map(r => r.setId).filter(Boolean) as string[]),
+    setKeys: new Set(recs.map(recordSetKey).filter((k): k is string => k !== null)),
     titles: new Set(recs.map(r => appliedKey(r.title, r.year))),
     posterUrls: new Set(recs.flatMap(r => r.posterUrls ?? [])),
     currentByItem,

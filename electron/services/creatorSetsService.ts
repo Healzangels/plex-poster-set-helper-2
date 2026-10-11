@@ -76,7 +76,10 @@ function ensureLoaded(): void {
       return
     }
     for (const [k, c] of Object.entries(data.creators ?? {})) {
-      const sets = c.sets ?? []
+      // Caches written before sets carried a `source` lack it. Every creator set
+      // is a MediUX set, so fill it in rather than bump the version and force a
+      // full re-crawl of every creator.
+      const sets = (c.sets ?? []).map(s => (s.source ? s : { ...s, source: 'mediux' as const }))
       store.set(k, {
         username: c.username, sets, seen: new Set(sets.map(s => s.id)),
         status: c.capped ? 'capped' : 'done', capped: !!c.capped, lastPage: 0,

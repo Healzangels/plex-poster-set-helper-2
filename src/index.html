@@ -4,6 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' http://localhost:*" />
+    <!-- ThePosterDB's image CDN hotlink-protects by Referer: any foreign origin
+         (http://localhost:5173 in dev, the host in Docker) gets a 403, while a
+         request with no Referer is served. Sending none keeps TPDb artwork
+         visible; nothing else the app loads depends on a Referer. -->
+    <meta name="referrer" content="no-referrer" />
     <title>Plex Poster Set Helper 2</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

@@ -279,14 +279,14 @@ function PosterThumb({
 export default function UrlQueueEntry({ entry, isRunning, patchPoster }: Props) {
   const [expanded, setExpanded] = useState(false)
   const [lightbox, setLightbox] = useState<number | null>(null)
-  const [appliedIdx, setAppliedIdx] = useState<AppliedIndex>({ setIds: new Set(), titles: new Set(), posterUrls: new Set(), currentByItem: new Map(), currentPosterUrls: new Set() })
+  const [appliedIdx, setAppliedIdx] = useState<AppliedIndex>({ setKeys: new Set(), titles: new Set(), posterUrls: new Set(), currentByItem: new Map(), currentPosterUrls: new Set() })
   const removeEntry = useScrapeStore(s => s.removeEntry)
 
   const doneCount = entry.posters.filter(p => p.uploadStatus === 'done').length
 
-  // MediUX set id for this entry (only for /sets/ links) - recorded on upload so
-  // the Library Browser recognises it.
-  const entrySetId = entry.url.match(/\/sets\/(\d+)/)?.[1]
+  // Set id for this entry - recorded on upload so the Library Browser
+  // recognises it. MediUX sets live at /sets/{id}, ThePosterDB's at /set/{id}.
+  const entrySetId = (entry.url.match(/\/sets\/(\d+)/) ?? entry.url.match(/\/set\/(\d+)/))?.[1]
 
   // Reloads when expanded and whenever an upload completes so it stays live.
   useEffect(() => {

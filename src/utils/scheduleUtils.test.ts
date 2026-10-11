@@ -8,6 +8,7 @@ import {
   ScheduleValidationError,
   analyzeUrls,
   appliedUrlIndex,
+  artFilterMatches,
   creatorOfUrl,
   creatorSyncUrl,
   cronExpressionError,
@@ -22,6 +23,7 @@ import {
   formToCron,
   mediuxSetId,
   mergeAppliedRecords,
+  posterdbSetId,
   nextCronRuns,
   normalizeJob,
   planQuickSync,
@@ -30,6 +32,7 @@ import {
   recoverInterrupted,
   relativeTime,
   scheduleCoverage,
+  setRefOfUrl,
   urlKey,
   withNextRun,
   type ScheduleForm,
@@ -355,6 +358,16 @@ describe('creator and set URL helpers', () =>
     expect(mediuxSetId('https://mediux.pro/sets/12?x=1')).toBe('12')
     expect(mediuxSetId('https://theposterdb.com/set/12')).toBeNull()
   })
+
+  it('reads set ids from ThePosterDB URLs and tags a set from either site with its source', () =>
+  {
+    expect(posterdbSetId('https://theposterdb.com/set/12')).toBe('12')
+    expect(posterdbSetId('https://mediux.pro/sets/12')).toBeNull()
+    expect(posterdbSetId('https://theposterdb.com/poster/12')).toBeNull()
+    expect(setRefOfUrl('https://mediux.pro/sets/12')).toEqual({ source: 'mediux', id: '12' })
+    expect(setRefOfUrl('https://theposterdb.com/set/12')).toEqual({ source: 'posterdb', id: '12' })
+    expect(setRefOfUrl('https://mediux.pro/user/alice/sets')).toBeNull()
+  })
 })
 
 describe('planQuickSync', () =>
@@ -449,6 +462,13 @@ describe('describeQuickSync', () =>
     expect(describeQuickSync({ kind: 'update', job: wide, added: 1, reenabled: false }, 0, 'alice'))
       .toBe('"Sync @alice" now syncs every set from @alice (Every day at 03:00).')
   })
+
+  it('never treats a MediUX creator-wide sync as covering a ThePosterDB set', () =>
+  {
+    const wide = job({ id: 'wide', urls: [creatorSyncUrl('alice')] })
+    const plan = planQuickSync([wide], { urls: ['https://theposterdb.com/set/9'], name: 'x', cronExpr: '0 3 * * 0', creator: 'alice' }, () => 'id-new')
+    expect(plan.kind).toBe('create')
+  })
 })
 
 describe('scheduleCoverage', () =>
@@ -462,6 +482,35 @@ describe('scheduleCoverage', () =>
     expect(coveringJob(coverage, '1')?.id).toBe('sets')
     expect(coveringJob(coverage, '99', 'ALICE')?.id).toBe('wide')
     expect(coveringJob(coverage, '2')).toBeUndefined()
+  })
+
+  it('keeps MediUX and ThePosterDB sets apart even when their ids match', () =>
+  {
+    const mediuxJob = job({ id: 'mediux', urls: ['https://mediux.pro/sets/42'] })
+    const tpdbJob = job({ id: 'tpdb', urls: ['https://theposterdb.com/set/7'] })
+    const wideJob = job({ id: 'wide', urls: [creatorSyncUrl('Alice')] })
+    const coverage = scheduleCoverage([mediuxJob, tpdbJob, wideJob])
+    expect(coveringJob(coverage, '42')?.id).toBe('mediux')
+    expect(coveringJob(coverage, '42', undefined, 'posterdb')).toBeUndefined()
+    expect(coveringJob(coverage, '7', undefined, 'posterdb')?.id).toBe('tpdb')
+    expect(coveringJob(coverage, '7')).toBeUndefined()
+    // A ThePosterDB uploader named like a synced MediUX creator is someone else.
+    expect(coveringJob(coverage, '99', 'alice', 'posterdb')).toBeUndefined()
+    expect(coveringJob(coverage, '99', 'alice', 'mediux')?.id).toBe('wide')
+  })
+
+  it('judges "unscheduled" art per source', () =>
+  {
+    const coverage = scheduleCoverage([
+      job({ id: 'mediux', urls: ['https://mediux.pro/sets/42'] }),
+      job({ id: 'wide', urls: [creatorSyncUrl('alice')] }),
+    ])
+    const rec = (o: Partial<AppliedRecord>): AppliedRecord =>
+      ({ itemKey: '1', title: 'Show', type: 'show', source: 'mediux', appliedAt: '2026-10-01T00:00:00.000Z', ...o })
+    const unscheduled = { kind: 'unscheduled' } as const
+    expect(artFilterMatches(unscheduled, [rec({ setId: '42' })], coverage)).toBe(false)
+    expect(artFilterMatches(unscheduled, [rec({ setId: '42', source: 'posterdb' })], coverage)).toBe(true)
+    expect(artFilterMatches(unscheduled, [rec({ setId: '5', uploader: 'alice', source: 'posterdb' })], coverage)).toBe(true)
   })
 })
 
@@ -491,6 +540,13 @@ describe('applied history', () =>
       ['2', '2026-10-01T00:00:00.000Z', undefined],
     ])
     expect(mergeAppliedRecords(existing, [rec({ itemKey: '3' })], 2).map(r => r.itemKey)).toEqual(['3', '1'])
+  })
+
+  it('keeps one row per source when MediUX and ThePosterDB sets share an id', () =>
+  {
+    const existing = [rec({ itemKey: '1', setId: '42', source: 'mediux', posterUrls: ['m'] })]
+    const merged = mergeAppliedRecords(existing, [rec({ itemKey: '1', setId: '42', source: 'posterdb', posterUrls: ['p'] })])
+    expect(merged.map(r => [r.source, r.posterUrls])).toEqual([['posterdb', ['p']], ['mediux', ['m']]])
   })
 })
 

@@ -31,7 +31,7 @@ const { ScraperFactory } = await import('../../electron/scrapers/scraperFactory'
 function userSet(id: string, dateUpdated: string): MediuxUserSet
 {
   return {
-    id, setName: `Set ${id}`, uploader: 'alice', posterCount: 1, backdropCount: 0, titleCardCount: 0,
+    id, source: 'mediux', setName: `Set ${id}`, uploader: 'alice', posterCount: 1, backdropCount: 0, titleCardCount: 0,
     posters: [], title: `Show ${id}`, year: 2020, mediaType: 'show', dateUpdated,
   }
 }

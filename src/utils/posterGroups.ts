@@ -4,6 +4,21 @@ import { posterKind } from '../../electron/services/scheduleUtils'
 export type FileType = 'poster' | 'backdrop' | 'title_card'
 export const ALL_TYPES: FileType[] = ['poster', 'backdrop', 'title_card']
 
+/** Where a poster set came from. */
+export type SetSource = 'mediux' | 'posterdb'
+
+/**
+ * Source-qualified identity for a poster set. MediUX and ThePosterDB both
+ * number their sets from 1, so ids collide across sources - anything that keys
+ * a map, a React list, or applied history by set must use this, never `id`.
+ *
+ * @param s - Anything carrying a set id and its source.
+ * @returns The "source:id" key.
+ */
+export function setKey(s: { id?: string; source: SetSource }): string {
+  return `${s.source}:${s.id ?? ''}`
+}
+
 /**
  * Classifies a poster by what it targets in Plex.
  *

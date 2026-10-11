@@ -1,5 +1,5 @@
 import pLimit from 'p-limit'
-import { PosterdbScraper, posterdbUrlType } from './posterdbScraper'
+import { PosterdbScraper, posterdbUrlType, type PosterdbMediaType } from './posterdbScraper'
 import { MediuxScraper } from './mediuxScraper'
 import { BaseScraper } from './baseScraper'
 import { Logger } from '../services/logger'
@@ -129,6 +129,25 @@ export const ScraperFactory = {
    */
   async browseMediux(tmdbId: string, type: 'movie' | 'show') {
     return getMediux().browseSets(tmdbId, type)
+  },
+
+  /**
+   * Lists ThePosterDB sets for a title (library browser). Matched by title/year
+   * rather than TMDB - ThePosterDB has no public id lookup - so this works for
+   * items MediUX can't resolve, and returns nothing when the title isn't there.
+   *
+   * @param title - Plex title.
+   * @param year - Release year, when known.
+   * @param type - Movie, show, or collection.
+   * @returns Set summaries, or an empty list on failure (never throws).
+   */
+  async browsePosterdb(title: string, year: number | undefined, type: PosterdbMediaType) {
+    try {
+      return await getPosterdb().browseSets(title, year, type)
+    } catch (err) {
+      Logger.warn('ScraperFactory', `browsePosterdb failed for "${title}": ${err instanceof Error ? err.message : err}`)
+      return []
+    }
   },
 
   async browseMediuxCollection(

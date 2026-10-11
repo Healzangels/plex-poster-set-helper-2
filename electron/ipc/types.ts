@@ -501,12 +501,22 @@ export interface SectionItemsRes {
   total: number
 }
 
-/** One MediUX set available for a given title, with its uploader. */
-export interface MediuxSetSummary {
+/** One poster set available for a given title, with its uploader. */
+export interface PosterSetSummary {
+  /**
+   * Set id as the source site numbers it. Only unique *within* a source -
+   * MediUX and ThePosterDB both use plain integers and do collide - so anything
+   * keying sets across sources must combine it with `source` (see setKey() in
+   * src/utils/posterGroups).
+   */
   id: string
+  /** Which site the set came from. */
+  source: 'mediux' | 'posterdb'
   setName: string
   uploader: string
   uploaderAvatar?: string
+  /** The set's page on its source site. */
+  setUrl?: string
   posterCount: number
   backdropCount: number
   titleCardCount: number
@@ -524,6 +534,12 @@ export interface BrowseSetsReq {
   tvdbId?: string
   imdbId?: string
   anidbId?: string
+  /**
+   * Plex title/year. ThePosterDB has no public id search, so its lookup matches
+   * on these instead of TMDB.
+   */
+  title?: string
+  year?: number
 }
 
 export interface CollectionsReq {
@@ -540,7 +556,7 @@ export interface CollectionSetsReq {
 }
 
 /** A set from a creator's page, with library-match info resolved. */
-export interface MediuxUserSet extends MediuxSetSummary {
+export interface MediuxUserSet extends PosterSetSummary {
   /** Parsed media title (for matching). */
   title: string
   year?: number
@@ -618,11 +634,17 @@ export interface UserSetsChunk {
 }
 
 export interface BrowseSetsRes {
-  sets: MediuxSetSummary[]
+  sets: PosterSetSummary[]
   /** The resolved id (echoed back for the UI). */
   tmdbId?: string
   /** e.g. "no_tmdb" when the item can't be matched. */
   error?: string
+  /**
+   * The item has no TMDB id, so MediUX was skipped. Reported alongside results
+   * rather than as `error` when ThePosterDB (which matches on title) still found
+   * sets - the browse partly worked, and the UI says so without hiding them.
+   */
+  tmdbMissing?: boolean
   /** Plex collection member movies (collection browse only). */
   collectionMembers?: LibraryItem[]
 }

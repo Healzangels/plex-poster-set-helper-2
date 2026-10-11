@@ -1,7 +1,7 @@
 import { BaseScraper, USER_AGENTS, pick, sleep, sleepConfig, mapPool } from './baseScraper'
 import { Logger } from '../services/logger'
 import { ConfigService } from '../services/config'
-import type { PosterInfo, MediuxSetSummary, MediuxUserSet } from '../ipc/types'
+import type { PosterInfo, PosterSetSummary, MediuxUserSet } from '../ipc/types'
 import type { Page } from 'playwright'
 
 /*
@@ -474,7 +474,7 @@ function avatarUrl(uc?: UserCreated | null): string | undefined {
  * @param fb - Title/year fallback for files lacking refs.
  * @returns Counts, preview, posters, uploader info, and detected media type.
  */
-function setToSummary(set: MediuxSet, allowed: Set<string>, fb: Fallback): MediuxSetSummary {
+function setToSummary(set: MediuxSet, allowed: Set<string>, fb: Fallback): PosterSetSummary {
   const memberIds = memberIdIndex(set)
   const posters = (set.files ?? [])
     .map(f => fileToInfo(f, set, allowed, fb, memberIds))
@@ -503,9 +503,11 @@ function setToSummary(set: MediuxSet, allowed: Set<string>, fb: Fallback): Mediu
 
   return {
     id: String(set.id),
+    source: 'mediux',
     setName: set.set_name ?? set.name ?? `Set ${set.id}`,
     uploader: set.user_created?.username ?? 'Unknown',
     uploaderAvatar: avatarUrl(set.user_created),
+    setUrl: `https://mediux.pro/sets/${set.id}`,
     posterCount,
     backdropCount,
     titleCardCount,
@@ -651,7 +653,7 @@ export class MediuxScraper extends BaseScraper {
    * @param type - Media type of the title.
    * @returns Set summaries, empty when none exist.
    */
-  async browseSets(tmdbId: string, type: 'movie' | 'show'): Promise<MediuxSetSummary[]> {
+  async browseSets(tmdbId: string, type: 'movie' | 'show'): Promise<PosterSetSummary[]> {
     const url = `https://mediux.pro/${type === 'movie' ? 'movies' : 'shows'}/${tmdbId}`
     Logger.scrape('MediUX', `Browsing sets: ${url}`)
 
@@ -697,7 +699,7 @@ export class MediuxScraper extends BaseScraper {
     collectionTitle: string,
     tmdbCollectionId: string | undefined,
     childTmdbIds: string[],
-  ): Promise<MediuxSetSummary[]> {
+  ): Promise<PosterSetSummary[]> {
     const allTypes = new Set(['poster', 'backdrop', 'title_card'])
     const collNorm = normalizeCollectionName(collectionTitle)
 
@@ -706,7 +708,7 @@ export class MediuxScraper extends BaseScraper {
       return n === collNorm || n.includes(collNorm) || collNorm.includes(n)
     }
 
-    const hasCollectionArt = (s: MediuxSetSummary) =>
+    const hasCollectionArt = (s: PosterSetSummary) =>
       s.posters.some(p => p.isCollection)
       || (/\bcollection\b/i.test(s.setName) && matchesTitle(s.setName))
 
@@ -733,7 +735,7 @@ export class MediuxScraper extends BaseScraper {
     // after every fetch, only re-fetches /sets/{id} for sets it hasn't enriched
     // yet instead of re-enriching the whole accumulated pile each pass.
     const enrichedById = new Map<string, MediuxSet>()
-    const finalize = async (): Promise<MediuxSetSummary[]> => {
+    const finalize = async (): Promise<PosterSetSummary[]> => {
       const pending = [...rawById.values()].filter(s => !enrichedById.has(String(s.id)))
       for (const s of await this._enrichCollectionSets(pending)) enrichedById.set(String(s.id), s)
       if (!enrichedById.size) return []

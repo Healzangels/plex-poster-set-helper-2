@@ -757,11 +757,46 @@ export function mediuxSetId(url: string): string | null
   return m ? m[1] : null
 }
 
+/**
+ * Reads the set id from a ThePosterDB set URL.
+ *
+ * @param url - URL to inspect.
+ * @returns The numeric set id, or null for other URLs.
+ */
+export function posterdbSetId(url: string): string | null
+{
+  const m = /theposterdb\.com\/set\/(\d+)/i.exec(url)
+  return m ? m[1] : null
+}
+
+/**
+ * Reads the set a URL points at on either site. Ids are only unique within a
+ * site (MediUX and ThePosterDB both number sets from 1), so the source travels
+ * with the id.
+ *
+ * @param url - URL to inspect.
+ * @returns The set's source and id, or null for anything but a set URL.
+ */
+export function setRefOfUrl(url: string): { source: 'mediux' | 'posterdb'; id: string } | null
+{
+  const mediux = mediuxSetId(url)
+  if (mediux) return { source: 'mediux', id: mediux }
+  const posterdb = posterdbSetId(url)
+  return posterdb ? { source: 'posterdb', id: posterdb } : null
+}
+
+/** Coverage-map key for a set: "source:id". */
+function coverageKey(source: 'mediux' | 'posterdb', id: string): string
+{
+  return `${source}:${id}`
+}
+
 function coversUrl(job: ScheduledJob, url: string, creator?: string): boolean
 {
   const key = urlKey(url)
   if (job.urls.some(u => urlKey(u) === key)) return true
-  if (!creator) return false
+  // Creator-wide syncs are MediUX feeds; they never cover another site's set.
+  if (!creator || setRefOfUrl(url)?.source === 'posterdb') return false
   const c = creator.toLowerCase()
   return job.urls.some(u => creatorOfUrl(u) === c)
 }
@@ -873,15 +908,17 @@ export function describeQuickSync(plan: QuickSyncPlan, setCount: number, creator
   return creator ? `Syncing every set from @${creator} (${when}).` : `Saved "${job.name}" (${when}).`
 }
 
-/** Enabled jobs indexed by the MediUX sets and creators they sync. */
+/** Enabled jobs indexed by the sets and MediUX creators they sync. */
 export interface ScheduleCoverage
 {
+  /** Keyed by "source:id" - set ids collide across sites. */
   sets: Map<string, ScheduledJob>
   creators: Map<string, ScheduledJob>
 }
 
 /**
- * Indexes enabled jobs by MediUX set id and by creator-wide sync.
+ * Indexes enabled jobs by set (MediUX or ThePosterDB) and by MediUX
+ * creator-wide sync.
  *
  * @param jobs - Current jobs.
  * @returns Lookups for the Library Browser's Scheduled badges.
@@ -894,8 +931,9 @@ export function scheduleCoverage(jobs: ScheduledJob[]): ScheduleCoverage
     if (!job.enabled) continue
     for (const url of job.urls)
     {
-      const setId = mediuxSetId(url)
-      if (setId && !coverage.sets.has(setId)) coverage.sets.set(setId, job)
+      const ref = setRefOfUrl(url)
+      const key = ref && coverageKey(ref.source, ref.id)
+      if (key && !coverage.sets.has(key)) coverage.sets.set(key, job)
       const creator = creatorOfUrl(url)
       if (creator && !coverage.creators.has(creator)) coverage.creators.set(creator, job)
     }
@@ -904,16 +942,26 @@ export function scheduleCoverage(jobs: ScheduledJob[]): ScheduleCoverage
 }
 
 /**
- * Finds the enabled job that syncs a MediUX set.
+ * Finds the enabled job that syncs a set.
  *
  * @param coverage - Index from {@link scheduleCoverage}.
- * @param setId - MediUX set id.
+ * @param setId - The set's id on its site.
  * @param creator - The set's uploader, matched against creator-wide jobs.
+ * @param source - The set's site. Creator-wide jobs are MediUX feeds, so they
+ *   only ever cover MediUX sets - a ThePosterDB uploader who shares a name
+ *   with a synced MediUX creator is someone else.
  * @returns The covering job, if any.
  */
-export function coveringJob(coverage: ScheduleCoverage, setId: string, creator?: string): ScheduledJob | undefined
+export function coveringJob(
+  coverage: ScheduleCoverage,
+  setId: string,
+  creator?: string,
+  source: 'mediux' | 'posterdb' = 'mediux',
+): ScheduledJob | undefined
 {
-  return coverage.sets.get(setId) ?? (creator ? coverage.creators.get(creator.toLowerCase()) : undefined)
+  const direct = coverage.sets.get(coverageKey(source, setId))
+  if (direct || source !== 'mediux' || !creator) return direct
+  return coverage.creators.get(creator.toLowerCase())
 }
 
 /**
@@ -979,8 +1027,8 @@ export function artFilterMatches(filter: LibraryArtFilter, records: AppliedRecor
     }
     case 'unscheduled':
       return records.length > 0 && !records.some(r =>
-        (!!r.setId && coverage.sets.has(r.setId))
-        || (!!r.uploader && coverage.creators.has(r.uploader.toLowerCase())))
+        (!!r.setId && coverage.sets.has(coverageKey(r.source, r.setId)))
+        || (r.source === 'mediux' && !!r.uploader && coverage.creators.has(r.uploader.toLowerCase())))
     default:
       return true
   }
@@ -1009,7 +1057,7 @@ export function appliedUrlIndex(records: AppliedRecord[]): Map<string, Set<strin
 }
 
 /**
- * Merges new applied entries into history. Entries dedupe on item and set, the
+ * Merges new applied entries into history. Entries dedupe on item, set and source, the
  * per-poster URLs and slots accumulate, and the newest entries move to the
  * front.
  *
@@ -1023,7 +1071,9 @@ export function mergeAppliedRecords(existing: AppliedRecord[], incoming: Applied
   let list = existing
   for (const rec of incoming)
   {
-    const same = (r: AppliedRecord) => r.itemKey === rec.itemKey && r.setId === rec.setId
+    // Same item + same set from the same site. Source matters: MediUX set 42 and
+    // ThePosterDB set 42 are different sets, and merging them would lose a row.
+    const same = (r: AppliedRecord) => r.itemKey === rec.itemKey && r.setId === rec.setId && r.source === rec.source
     const prior = list.find(same)
     const posterUrls = [...new Set([...(prior?.posterUrls ?? []), ...(rec.posterUrls ?? [])])]
     const merged: AppliedRecord = { ...rec, posterUrls }

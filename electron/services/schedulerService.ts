@@ -14,7 +14,7 @@ import { appEvents } from '../runtime/events'
 import { isWebMode } from '../runtime/runtime'
 import {
   addSlotCoverage, appliedUrlIndex, creatorOfUrl, describeRun, emptyTally, failedRun, finishRun, isSlotCovered,
-  mediuxSetId, mergeAppliedRecords, normalizeJob, posterKind, posterSlot, previewCron, recordRun, recoverInterrupted,
+  mergeAppliedRecords, normalizeJob, posterKind, posterSlot, previewCron, recordRun, recoverInterrupted, setRefOfUrl,
   reorderJobs, slotCoverage, titleLabel, withNextRun, type RunTally, type SlotCoverage,
 } from './scheduleUtils'
 
@@ -538,7 +538,9 @@ export const SchedulerService = {
       Logger.warn('Scheduler', `URL failed in job "${job.name}": ${scrapeError}`)
       return
     }
-    const source: PosterSource = { setId: mediuxSetId(url) ?? undefined, uploader: job.creator }
+    // The record's source comes from each poster, so the id just has to be
+    // read from whichever site the URL is on.
+    const source: PosterSource = { setId: setRefOfUrl(url)?.id, uploader: job.creator }
     for (let j = 0; j < posters.length; j++) {
       this._setProgress(job.id, { ...base, poster: { done: j, total: posters.length } })
       await this._applyPoster(ctx, posters[j], source)

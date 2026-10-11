@@ -96,21 +96,27 @@ export const handlers = {
           tmdbCollectionId = (await PlexService.resolveTmdbCollectionId(childTmdbIds[0])) ?? undefined
         }
 
-        if (!tmdbCollectionId && !childTmdbIds.length) {
-          return { sets: [], error: 'no_tmdb' }
-        }
+        const hasTmdb = !!tmdbCollectionId || childTmdbIds.length > 0
 
         Logger.scrape(
           'Library',
           `Collection "${title}": tmdbCollection=${tmdbCollectionId ?? 'none'}, ${childTmdbIds.length}/${info.children.length} child TMDB id(s)`,
         )
 
-        const sets = await ScraperFactory.browseMediuxCollection(
-          title,
-          tmdbCollectionId,
-          childTmdbIds,
-        )
-        return { sets, collectionMembers: info.children }
+        // Same split as the per-title browse: MediUX by TMDB id, ThePosterDB by
+        // collection name.
+        const [mediux, posterdb] = await Promise.all([
+          hasTmdb
+            ? ScraperFactory.browseMediuxCollection(title, tmdbCollectionId, childTmdbIds)
+            : Promise.resolve([]),
+          ScraperFactory.browsePosterdb(title, undefined, 'collection'),
+        ])
+
+        const sets = [...mediux, ...posterdb]
+        if (!hasTmdb && !sets.length) return { sets: [], error: 'no_tmdb' }
+        return hasTmdb
+          ? { sets, collectionMembers: info.children }
+          : { sets, collectionMembers: info.children, tmdbMissing: true }
       } catch (err) {
         Logger.error('Library', `collectionSets failed: ${err instanceof Error ? err.message : String(err)}`)
         return { sets: [], error: err instanceof Error ? err.message : String(err) }
@@ -122,11 +128,23 @@ export const handlers = {
           key: '', title: '', type: req.type,
           tmdbId: req.tmdbId, tvdbId: req.tvdbId, imdbId: req.imdbId, anidbId: req.anidbId,
         })
-        if (!tmdbId) return { sets: [], error: 'no_tmdb' }
-        const sets = await ScraperFactory.browseMediux(tmdbId, req.type)
-        return { sets, tmdbId }
+
+        // The two sites are looked up independently and in parallel: MediUX
+        // needs a TMDB id, ThePosterDB matches on title. Either can come back
+        // empty without spoiling the other's results.
+        const [mediux, posterdb] = await Promise.all([
+          tmdbId ? ScraperFactory.browseMediux(tmdbId, req.type) : Promise.resolve([]),
+          req.title ? ScraperFactory.browsePosterdb(req.title, req.year, req.type) : Promise.resolve([]),
+        ])
+
+        const sets = [...mediux, ...posterdb]
+        // Only a total miss on an unresolvable item is an error worth blocking
+        // the panel with; when ThePosterDB found something, "no TMDB id" is just
+        // a note explaining why MediUX is absent.
+        if (!tmdbId && !sets.length) return { sets: [], error: 'no_tmdb' }
+        return tmdbId ? { sets, tmdbId } : { sets, tmdbMissing: true }
       } catch (err) {
-        Logger.error('Library', `browseMediux failed: ${err instanceof Error ? err.message : err}`)
+        Logger.error('Library', `browse sets failed: ${err instanceof Error ? err.message : err}`)
         return { sets: [], error: err instanceof Error ? err.message : String(err) }
       }
     },

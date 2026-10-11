@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback, useMemo, createContext, useCo
 import { AnimatePresence, motion } from 'framer-motion'
 import { Search, X, Upload, Check, AlertCircle, Loader2, User, Image as ImageIcon, ChevronDown, ChevronUp, Plus, UserPlus, Trash2, CalendarClock, CheckCircle2, RefreshCw, Star, Library, Download, LayoutGrid, Users, Film, Tv, Layers, ArrowUp, ArrowDown } from 'lucide-react'
 import type { ScheduledJob } from '../../../electron/ipc/types'
+import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
 import Select, { type SelectOption } from '../../components/ui/Select'
 import Checkbox from '../../components/ui/Checkbox'
@@ -9,7 +10,7 @@ import Spinner from '../../components/ui/Spinner'
 import Lightbox, { type LightboxImage } from '../../components/ui/Lightbox'
 import Pager from '../../components/ui/Pager'
 import PlexConnectBanner from '../../components/ui/PlexConnectBanner'
-import { groupPosters, posterFileType, ALL_TYPES, defaultSetApplyScope, type FileType, type SetApplyScope } from '../../utils/posterGroups'
+import { groupPosters, posterFileType, setKey, ALL_TYPES, defaultSetApplyScope, type FileType, type SetApplyScope, type SetSource } from '../../utils/posterGroups'
 import { recordApplied, recordAppliedBatch, recordAppliedQuietly, appliedKey, loadAppliedIndex, type AppliedIndex } from '../../utils/appliedTracker'
 import { uuid } from '../../utils/uuid'
 import { errorMessage } from '../../utils/errorMessage'
@@ -19,7 +20,7 @@ import {
 import { useAppContext } from '../../app/AppContext'
 import { useNavStore } from '../../app/navStore'
 import type {
-  LibrarySection, LibraryItem, MediuxSetSummary, BrowseSetsRes, PosterInfo, MediuxUserSet, AppliedRecord,
+  LibrarySection, LibraryItem, PosterSetSummary, BrowseSetsRes, PosterInfo, MediuxUserSet, AppliedRecord,
   PlexArtSlot, LibrarySort, SortDir, LibraryArtFilter, LibraryStatusFilter,
 } from '../../../electron/ipc/types'
 import styles from './LibraryPage.module.css'
@@ -55,8 +56,9 @@ function toArtFilter(value: ArtFilterValue): LibraryArtFilter | undefined {
 }
 
 interface BrowseCacheEntry {
-  sets: MediuxSetSummary[]
+  sets: PosterSetSummary[]
   tmdbId?: string
+  tmdbMissing?: boolean
   collectionMembers?: LibraryItem[]
   fetchedAt: number
 }
@@ -104,7 +106,26 @@ function clampPanelWidth(w: number): number {
   return Math.max(PANEL_WIDTH_MIN, Math.min(max, w))
 }
 
-/** Match a MediUX collection-member poster to a Plex collection child. */
+/** Display names for the sites sets are browsed from. */
+const SOURCE_LABEL: Record<SetSource, string> = {
+  mediux: 'MediUX',
+  posterdb: 'ThePosterDB',
+}
+
+/** Compact form for the per-card badge; TPDb is ThePosterDB's own shorthand. */
+const SOURCE_SHORT: Record<SetSource, string> = {
+  mediux: 'MediUX',
+  posterdb: 'TPDb',
+}
+
+/** A creator's page on the site their set came from. */
+function creatorUrl(source: SetSource, uploader: string): string {
+  return source === 'posterdb'
+    ? `https://theposterdb.com/user/${encodeURIComponent(uploader)}`
+    : `https://mediux.pro/user/${encodeURIComponent(uploader)}`
+}
+
+/** Match a collection-member poster to a Plex collection child. */
 function matchCollectionChild(p: PosterInfo, children: LibraryItem[]): LibraryItem | undefined {
   if (p.tmdbId) {
     const byTmdb = children.find(c => c.tmdbId === p.tmdbId)
@@ -195,7 +216,7 @@ function useSubscriptions() {
   return subs
 }
 
-/** Plex library grid with per-section tabs, cross-library search, and the MediUX sets panel. */
+/** Plex library grid with per-section tabs, cross-library search, and the poster-sets panel. */
 function MyLibraryView({ subs, targetSection, targetItem }: { subs: string[]; targetSection: string | null; targetItem: LibraryItem | null }) {
   const [sections, setSections]   = useState<LibrarySection[]>([])
   const [activeKey, setActiveKey] = useState<string>('')
@@ -273,7 +294,7 @@ function MyLibraryView({ subs, targetSection, targetItem }: { subs: string[]; ta
     setSelected(null)
   }, [targetSection])
 
-  // Deep-link from the command palette: open a specific item's MediUX sets panel,
+  // Deep-link from the command palette: open a specific item's sets panel,
   // and scroll its card into view within the active library tab.
   const scrollTargetRef = useRef<string | null>(null)
   const flashCard = useCallback((key: string) => {
@@ -288,7 +309,7 @@ function MyLibraryView({ subs, targetSection, targetItem }: { subs: string[]; ta
   useEffect(() => {
     if (!targetItem) return
     // Filter the grid down to the chosen title (cross-library search) and open
-    // its MediUX panel, so a command-palette jump lands on just that item.
+    // its sets panel, so a command-palette jump lands on just that item.
     setSearch(targetItem.title)
     setSelected(targetItem)
     scrollTargetRef.current = targetItem.key
@@ -693,7 +714,7 @@ export default function LibraryPage() {
             <h1 className="page-title">{mode === 'library' ? 'Library Browser' : 'MediUX Creators'}</h1>
             <p className="page-subtitle">
               {mode === 'library'
-                ? 'Browse your Plex library and apply MediUX poster sets.'
+                ? 'Browse your Plex library and apply MediUX and ThePosterDB poster sets.'
                 : 'Follow MediUX creators and apply their newest art to your library.'}
             </p>
           </div>
@@ -866,12 +887,15 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
   onClose: () => void
   onItemPoster: (key: string, thumb: string) => void
 }) {
-  const [sets, setSets]       = useState<MediuxSetSummary[]>([])
+  const [sets, setSets]       = useState<PosterSetSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState<string | null>(null)
 
   const [hasTmdbKey, setHasTmdbKey] = useState(false)
+  // The item has no TMDB id, so only ThePosterDB could be searched.
+  const [tmdbMissing, setTmdbMissing] = useState(false)
   const [uploader, setUploader] = useState<string>('all')
+  const [source, setSource]     = useState<SetSource | 'all'>('all')
   const [types, setTypes]       = useState<Set<FileType>>(new Set(ALL_TYPES))
   const [applyMap, setApplyMap] = useState<Record<string, ApplyState>>({})
   // Per-set apply scope: movies and collection poster are chosen independently.
@@ -883,7 +907,7 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
   // tmdbId (or title|year). Resolved with the same findItem the apply uses, so
   // the "N movies" count matches exactly what "apply all" will touch.
   const [memberInLib, setMemberInLib] = useState<Map<string, boolean>>(new Map())
-  const [appliedIdx, setAppliedIdx] = useState<AppliedIndex>({ setIds: new Set(), titles: new Set(), posterUrls: new Set(), currentByItem: new Map(), currentPosterUrls: new Set() })
+  const [appliedIdx, setAppliedIdx] = useState<AppliedIndex>({ setKeys: new Set(), titles: new Set(), posterUrls: new Set(), currentByItem: new Map(), currentPosterUrls: new Set() })
   const [schedJobs, setSchedJobs] = useState<ScheduledJob[]>([])
   const [quickCron, setQuickCron] = useState(DEFAULT_QUICK_CRON)
   const [schedulingId, setSchedulingId] = useState<string | null>(null)
@@ -909,6 +933,7 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
   // listed - only genuinely transient UI state does.
   useEffect(() => {
     setUploader('all')
+    setSource('all')
     setApplyMap({})
     setCollectionScope({})
     setSchedulingId(null)
@@ -930,22 +955,24 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
   }, [])
 
   // Schedule a single set straight from the library, reusing any job that
-  // already covers it (the set itself or a whole-creator sync).
-  async function scheduleSet(s: MediuxSetSummary) {
+  // already covers it (the set itself or, for MediUX, a whole-creator sync).
+  async function scheduleSet(s: PosterSetSummary) {
     if (schedulingId) return
-    setSchedulingId(s.id)
+    const sKey = setKey(s)
+    setSchedulingId(sKey)
     setScheduleError(null)
     try {
       const plan = planQuickSync(await window.api.scheduler.list(), {
-        urls: [`https://mediux.pro/sets/${s.id}`],
+        urls: [s.setUrl ?? `https://mediux.pro/sets/${s.id}`],
         name: `${item.title}${item.year ? ` (${item.year})` : ''} - ${s.setName}`,
         cronExpr: quickCron,
-        creator: s.uploader,
+        // Creator-wide syncs are MediUX feeds; a ThePosterDB uploader has none.
+        creator: s.source === 'mediux' ? s.uploader : undefined,
       }, uuid)
       if (plan.kind !== 'exists') await window.api.scheduler.save(plan.job)
       setSchedJobs(await window.api.scheduler.list())
     } catch (err) {
-      setScheduleError({ setId: s.id, message: errorMessage(err) })
+      setScheduleError({ setId: sKey, message: errorMessage(err) })
     } finally {
       setSchedulingId(null)
     }
@@ -1022,6 +1049,7 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
     if (cached) {
       setSets(cached.sets)
       setResolvedTmdbId(cached.tmdbId)
+      setTmdbMissing(!!cached.tmdbMissing)
       setCollectionMembers(cached.collectionMembers ?? [])
       setLoading(false)
     } else {
@@ -1040,6 +1068,8 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
       : window.api.library.sets({
           type: item.type === 'show' ? 'show' : 'movie',
           tmdbId: item.tmdbId, tvdbId: item.tvdbId, imdbId: item.imdbId, anidbId: item.anidbId,
+          // ThePosterDB has no id lookup, so it matches on these.
+          title: item.title, year: item.year,
         })
 
     load.then((res: BrowseSetsRes) => {
@@ -1048,6 +1078,7 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
       else if (res.error === 'no_movies') setError('no_movies')
       else if (res.error) setError(res.error)
       setResolvedTmdbId(res.tmdbId)
+      setTmdbMissing(!!res.tmdbMissing)
       const sorted = [...res.sets].sort((a, b) => {
         const fa = subSet.has(a.uploader.toLowerCase()) ? 0 : 1
         const fb = subSet.has(b.uploader.toLowerCase()) ? 0 : 1
@@ -1056,6 +1087,7 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
       browseSetsCache.set(key, {
         sets: sorted,
         tmdbId: res.tmdbId,
+        tmdbMissing: res.tmdbMissing,
         collectionMembers: res.collectionMembers,
         fetchedAt: Date.now(),
       })
@@ -1158,25 +1190,46 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
     return () => { cancelled = true }
   }, [sets, item.tmdbId, resolvedTmdbId, isCollectionItem, collectionMembers])
 
+  // How many sets each site contributed, for the source chips. Chips for a site
+  // that returned nothing are still shown (with a 0) so the absence is legible -
+  // "MediUX has no sets for this" is useful information, not noise.
+  const sourceCounts = useMemo(() => {
+    const counts: Record<SetSource, number> = { mediux: 0, posterdb: 0 }
+    for (const s of sets) counts[s.source]++
+    return counts
+  }, [sets])
+
+  // The uploader list follows the source filter, so picking ThePosterDB doesn't
+  // leave MediUX-only creators in the dropdown.
+  const sourceSets = useMemo(
+    () => source === 'all' ? sets : sets.filter(s => s.source === source),
+    [sets, source],
+  )
+
   const uploaders = useMemo(() => {
     // Followed uploaders first, then the rest alphabetically
-    const all = Array.from(new Set(sets.map(s => s.uploader)))
+    const all = Array.from(new Set(sourceSets.map(s => s.uploader)))
     all.sort((a, b) => {
       const fa = subSet.has(a.toLowerCase()) ? 0 : 1
       const fb = subSet.has(b.toLowerCase()) ? 0 : 1
       return fa - fb || a.localeCompare(b)
     })
     return ['all', ...all]
-  }, [sets, subSet])
+  }, [sourceSets, subSet])
+
+  // An uploader picked before switching source may not exist in the new one.
+  // Derived rather than reset in an effect, so the stale value falls back to
+  // "all" in the same render instead of flashing an empty list first.
+  const activeUploader = uploader !== 'all' && !uploaders.includes(uploader) ? 'all' : uploader
 
   const visibleSets = useMemo(
     () => {
-      const byUploader = uploader === 'all' ? sets : sets.filter(s => s.uploader === uploader)
+      const byUploader = activeUploader === 'all' ? sourceSets : sourceSets.filter(s => s.uploader === activeUploader)
       // Hide sets that have nothing to apply under the current type filter, so
       // the chips actually narrow the result list instead of only dimming art.
       return byUploader.filter(s => s.posters.some(p => types.has(posterFileType(p))))
     },
-    [sets, uploader, types],
+    [sourceSets, activeUploader, types],
   )
 
   function toggleType(t: FileType) {
@@ -1205,7 +1258,9 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
   /** Stable key for a collection-member poster's movie (matches the memberInLib map). */
   const memberKey = (p: PosterInfo) => p.tmdbId ?? `${p.title.toLowerCase()}|${p.year ?? ''}`
 
-  async function applySet(s: MediuxSetSummary) {
+  async function applySet(s: PosterSetSummary) {
+    // Every per-set map is keyed by source, never by the raw id (see setKey).
+    const sKey = setKey(s)
     const memberIds = [...new Set(s.posters.filter(p => p.isCollectionMember).map(p => p.tmdbId ?? `${p.title.toLowerCase()}|${p.year ?? ''}`))]
     const collectionInLib = memberIds.filter(k => memberInLib.get(k)).length
 
@@ -1220,7 +1275,7 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
       ? plain
       : collectionArt
     const hasCollectionArt = effectiveCollArt.length > 0
-    const scope = collectionScope[s.id] ?? defaultSetApplyScope(hasCollectionArt, collectionInLib)
+    const scope = collectionScope[sKey] ?? defaultSetApplyScope(hasCollectionArt, collectionInLib)
 
     if (isCollectionItem) {
       const memberPosters = scope.movies === 'none'
@@ -1233,12 +1288,12 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
       const willApply = [...memberPosters, ...(applyCollArt ? effectiveCollArt : [])]
       const enabledTotal = willApply.filter(p => types.has(posterFileType(p))).length
       if (enabledTotal === 0) return
-      setApplyMap(m => ({ ...m, [s.id]: { status: 'applying', done: 0, total: enabledTotal } }))
+      setApplyMap(m => ({ ...m, [sKey]: { status: 'applying', done: 0, total: enabledTotal } }))
 
       let totalDone = 0, totalFailed = 0
       const records: AppliedRecord[] = []
       const bump = (d: number) =>
-        setApplyMap(m => ({ ...m, [s.id]: { status: 'applying', done: totalDone + d, total: enabledTotal } }))
+        setApplyMap(m => ({ ...m, [sKey]: { status: 'applying', done: totalDone + d, total: enabledTotal } }))
 
       if (memberPosters.length > 0) {
         const movieMap = new Map<string, { child: LibraryItem; posters: PosterInfo[] }>()
@@ -1256,7 +1311,7 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
             const thumb = mainThumb(posters)
             records.push({
               itemKey: child.key, title: child.title, year: child.year, type: 'movie',
-              source: 'mediux', thumb: thumb ?? child.thumb, setId: s.id, uploader: s.uploader,
+              source: s.source, thumb: thumb ?? child.thumb, setId: s.id, uploader: s.uploader,
               posterUrls: memberRes.appliedUrls, slots: memberRes.appliedSlots, appliedAt: new Date().toISOString(),
             })
             if (thumb) onItemPoster(child.key, thumb)
@@ -1271,7 +1326,7 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
           const thumb = mainThumb(effectiveCollArt) ?? item.thumb
           records.push({
             itemKey: item.key, title: item.title, type: 'collection',
-            source: 'mediux', thumb, setId: s.id, uploader: s.uploader,
+            source: s.source, thumb, setId: s.id, uploader: s.uploader,
             posterUrls: collRes.appliedUrls, slots: collRes.appliedSlots, appliedAt: new Date().toISOString(),
           })
           if (thumb) onItemPoster(item.key, thumb)
@@ -1283,17 +1338,17 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
         historyError = await recordAppliedBatch(records).then(() => undefined, (err: unknown) => errorMessage(err))
         const appliedUrls = records.flatMap(r => r.posterUrls ?? [])
         setAppliedIdx(prev => ({
-          setIds: new Set(prev.setIds).add(s.id),
+          setKeys: new Set(prev.setKeys).add(sKey),
           titles: prev.titles,
           posterUrls: new Set([...prev.posterUrls, ...appliedUrls]),
-          currentByItem: records.reduce((map, r) => map.set(r.itemKey, s.id), new Map(prev.currentByItem)),
+          currentByItem: records.reduce((map, r) => map.set(r.itemKey, sKey), new Map(prev.currentByItem)),
           currentPosterUrls: new Set([...prev.currentPosterUrls, ...appliedUrls]),
         }))
         bumpArtReload()
       }
       setApplyMap(m => ({
         ...m,
-        [s.id]: { status: totalFailed && !totalDone ? 'error' : 'done', done: totalDone, total: enabledTotal, error: applyError(totalFailed, historyError) },
+        [sKey]: { status: totalFailed && !totalDone ? 'error' : 'done', done: totalDone, total: enabledTotal, error: applyError(totalFailed, historyError) },
       }))
       return
     }
@@ -1318,12 +1373,12 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
     ]
     const enabledTotal = willApply.filter(p => types.has(posterFileType(p))).length
     if (enabledTotal === 0) return
-    setApplyMap(m => ({ ...m, [s.id]: { status: 'applying', done: 0, total: enabledTotal } }))
+    setApplyMap(m => ({ ...m, [sKey]: { status: 'applying', done: 0, total: enabledTotal } }))
 
     let totalDone = 0, totalFailed = 0
     const records: AppliedRecord[] = []
     const bump = (d: number) =>
-      setApplyMap(m => ({ ...m, [s.id]: { status: 'applying', done: totalDone + d, total: enabledTotal } }))
+      setApplyMap(m => ({ ...m, [sKey]: { status: 'applying', done: totalDone + d, total: enabledTotal } }))
 
     // 1. The viewed item's own art.
     const mainRes = await applyPosters(item.key, viewedPosters, types, bump)
@@ -1332,7 +1387,7 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
       const thumb = mainThumb(viewedPosters)
       records.push({
         itemKey: item.key, title: item.title, year: item.year, type: item.type,
-        source: 'mediux', thumb: thumb ?? item.thumb, setId: s.id, uploader: s.uploader,
+        source: s.source, thumb: thumb ?? item.thumb, setId: s.id, uploader: s.uploader,
         posterUrls: mainRes.appliedUrls, slots: mainRes.appliedSlots, appliedAt: new Date().toISOString(),
       })
       if (thumb) onItemPoster(item.key, thumb)
@@ -1358,7 +1413,7 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
           records.push({
             itemKey: found.key, title: found.title, year: found.year,
             type: (found.type === 'movie' ? 'movie' : 'show'),
-            source: 'mediux', thumb: thumb ?? found.thumb, setId: s.id, uploader: s.uploader,
+            source: s.source, thumb: thumb ?? found.thumb, setId: s.id, uploader: s.uploader,
             posterUrls: memberRes.appliedUrls, slots: memberRes.appliedSlots, appliedAt: new Date().toISOString(),
           })
           if (thumb) onItemPoster(found.key, thumb)
@@ -1376,7 +1431,7 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
         if (collRes.done > 0) {
           records.push({
             itemKey: coll.key, title: coll.title, type: 'collection',
-            source: 'mediux', thumb: mainThumb(collectionArt) ?? coll.thumb, setId: s.id, uploader: s.uploader,
+            source: s.source, thumb: mainThumb(collectionArt) ?? coll.thumb, setId: s.id, uploader: s.uploader,
             posterUrls: collRes.appliedUrls, slots: collRes.appliedSlots, appliedAt: new Date().toISOString(),
           })
         }
@@ -1389,17 +1444,17 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
       historyError = await recordAppliedBatch(records).then(() => undefined, (err: unknown) => errorMessage(err))
       const appliedUrls = records.flatMap(r => r.posterUrls ?? [])
       setAppliedIdx(prev => ({
-        setIds: new Set(prev.setIds).add(s.id),
+        setKeys: new Set(prev.setKeys).add(sKey),
         titles: new Set([...prev.titles, ...records.map(r => appliedKey(r.title, r.year))]),
         posterUrls: new Set([...prev.posterUrls, ...appliedUrls]),
-        currentByItem: records.reduce((map, r) => map.set(r.itemKey, s.id), new Map(prev.currentByItem)),
+        currentByItem: records.reduce((map, r) => map.set(r.itemKey, sKey), new Map(prev.currentByItem)),
         currentPosterUrls: new Set([...prev.currentPosterUrls, ...appliedUrls]),
       }))
       bumpArtReload()
     }
     setApplyMap(m => ({
       ...m,
-      [s.id]: { status: totalFailed && !totalDone ? 'error' : 'done', done: totalDone, total: enabledTotal, error: applyError(totalFailed, historyError) },
+      [sKey]: { status: totalFailed && !totalDone ? 'error' : 'done', done: totalDone, total: enabledTotal, error: applyError(totalFailed, historyError) },
     }))
   }
 
@@ -1444,7 +1499,7 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
             className={styles.panelRefresh}
             onClick={refreshSets}
             disabled={loading && !refreshing}
-            title="Refresh MediUX sets"
+            title="Refresh sets"
           >
             <RefreshCw size={14} className={refreshing ? styles.spin : undefined} />
           </button>
@@ -1457,13 +1512,32 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
       {/* Filters */}
       {!loading && !error && sets.length > 0 && (
         <div className={styles.filters}>
+          <div className={styles.sourceToggles}>
+            <button
+              className={`${styles.sourceToggle} ${source === 'all' ? styles.sourceToggleOn : ''}`}
+              onClick={() => setSource('all')}
+            >
+              Both <span className={styles.sourceCount}>{sets.length}</span>
+            </button>
+            {(['mediux', 'posterdb'] as SetSource[]).map(src => (
+              <button
+                key={src}
+                className={`${styles.sourceToggle} ${source === src ? styles.sourceToggleOn : ''}`}
+                onClick={() => setSource(src)}
+                disabled={sourceCounts[src] === 0}
+                title={sourceCounts[src] === 0 ? `No ${SOURCE_LABEL[src]} sets for this title` : `Show only ${SOURCE_LABEL[src]} sets`}
+              >
+                {SOURCE_LABEL[src]} <span className={styles.sourceCount}>{sourceCounts[src]}</span>
+              </button>
+            ))}
+          </div>
           <Select
-            value={uploader}
+            value={activeUploader}
             onChange={setUploader}
             searchable={uploaders.length > 6}
             options={uploaders.map(u => ({
               value: u,
-              label: u === 'all' ? `All uploaders (${sets.length})` : u,
+              label: u === 'all' ? `All uploaders (${sourceSets.length})` : u,
               icon: u === 'all' ? <User size={13} /> : undefined,
             }))}
           />
@@ -1492,7 +1566,7 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
           animate={{ opacity: 1 }}
           transition={{ duration: 0.18 }}
         >
-        {loading && <div className={styles.panelLoading}><Spinner size="sm" /> <span>{isCollectionItem ? 'Finding collection sets on MediUX…' : 'Finding sets on MediUX…'}</span></div>}
+        {loading && <div className={styles.panelLoading}><Spinner size="sm" /> <span>{isCollectionItem ? 'Finding collection sets on MediUX and ThePosterDB…' : 'Finding sets on MediUX and ThePosterDB…'}</span></div>}
 
         {error === 'no_movies' && (
           <div className={styles.panelNotice}>
@@ -1530,6 +1604,7 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
                   <>This title&apos;s {agent} id has no known TMDB mapping, so MediUX has no sets to show for it.</>
                 )}
               </p>
+              <p className={styles.noticeSub}>ThePosterDB matches on title instead, and had nothing for this one either.</p>
             </div>
           )
         })()}
@@ -1537,8 +1612,20 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
           <div className={styles.panelNotice}><AlertCircle size={20} /><p>{error}</p></div>
         )}
 
+        {/* Sets came back from ThePosterDB (title match) but MediUX was skipped
+            for want of a TMDB id - worth saying, not worth hiding results for. */}
+        {!loading && !error && tmdbMissing && sets.length > 0 && (
+          <div className={styles.panelInlineNotice}>
+            <AlertCircle size={13} />
+            <span>
+              ThePosterDB sets only - this item has no TMDB id, so MediUX could not be searched.
+              {!hasTmdbKey && ' Add a TMDB API key in Settings to include it.'}
+            </span>
+          </div>
+        )}
+
         {!loading && !error && sets.length === 0 && (
-          <div className={styles.panelNotice}><ImageIcon size={20} /><p>No MediUX sets found for this title.</p></div>
+          <div className={styles.panelNotice}><ImageIcon size={20} /><p>No sets found for this title on MediUX or ThePosterDB.</p></div>
         )}
 
         {!loading && !error && sets.length > 0 && visibleSets.length === 0 && (
@@ -1546,12 +1633,13 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
         )}
 
         {visibleSets.map(s => {
+          const sKey = setKey(s)
           // "Applied" = the set currently live on this item; "Downloaded" = a set
           // applied before but since overwritten; "Has art" = title has art elsewhere.
-          const isCurrent = appliedIdx.currentByItem.get(item.key) === s.id
+          const isCurrent = appliedIdx.currentByItem.get(item.key) === sKey
           const badge = isCurrent
             ? <span className={styles.matchBadge}><CheckCircle2 size={11} /> Applied</span>
-            : appliedIdx.setIds.has(s.id)
+            : appliedIdx.setKeys.has(sKey)
               ? <span className={styles.downloadedBadge}><Download size={11} /> Downloaded</span>
               : itemApplied
                 ? <span className={styles.scheduledBadge}><Library size={11} /> Has art</span>
@@ -1569,15 +1657,15 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
             || (isCollectionItem
                 && !s.posters.some(p => p.isCollectionMember)
                 && s.posters.some(p => !p.isCollection && !p.isCollectionMember))
-          const applyScope = collectionScope[s.id] ?? defaultSetApplyScope(hasCollectionArt, collectionInLib)
+          const applyScope = collectionScope[sKey] ?? defaultSetApplyScope(hasCollectionArt, collectionInLib)
           const showScope = hasCollectionArt || collectionInLib > 1
             || (isCollectionItem && memberIds.some(k => memberInLib.get(k)))
-          const scheduledBy = coveringJob(coverage, s.id, s.uploader)
+          const scheduledBy = coveringJob(coverage, s.id, s.uploader, s.source)
           return (
             <SetCard
-              key={s.id}
+              key={sKey}
               set={s}
-              apply={applyMap[s.id]}
+              apply={applyMap[sKey]}
               onApply={() => applySet(s)}
               enabledTypes={types}
               followed={subSet.has(s.uploader.toLowerCase())}
@@ -1586,8 +1674,8 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
               scheduledBy={scheduledBy ? `${scheduledBy.name} · ${describeCron(scheduledBy.cronExpr)}` : undefined}
               onOpenSchedule={scheduledBy ? () => openScheduledJob(scheduledBy.id) : undefined}
               scheduleHint={describeCron(quickCron)}
-              scheduleError={scheduleError?.setId === s.id ? scheduleError.message : undefined}
-              scheduling={schedulingId === s.id}
+              scheduleError={scheduleError?.setId === sKey ? scheduleError.message : undefined}
+              scheduling={schedulingId === sKey}
               collectionMovies={collectionInLib}
               collectionTotal={collectionTotal}
               hasCollectionArt={hasCollectionArt}
@@ -1596,9 +1684,9 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
               onApplyScopeChange={showScope ? (patch) => {
                 setCollectionScope(m => ({
                   ...m,
-                  [s.id]: { ...(m[s.id] ?? defaultSetApplyScope(hasCollectionArt, collectionInLib)), ...patch },
+                  [sKey]: { ...(m[sKey] ?? defaultSetApplyScope(hasCollectionArt, collectionInLib)), ...patch },
                 }))
-                setApplyMap(m => { const next = { ...m }; delete next[s.id]; return next })
+                setApplyMap(m => { const next = { ...m }; delete next[sKey]; return next })
               } : undefined}
             />
           )
@@ -1631,9 +1719,9 @@ function ThumbButton({ url, label, episode, onClick }: { url: string; label: str
   )
 }
 
-/** Expandable card for one MediUX set: preview, uploader, counts, apply state, and grouped posters. */
+/** Expandable card for one poster set: preview, uploader, source, counts, apply state, and grouped posters. */
 function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, followed, selectable, checked, onToggleSelect, onSchedule, scheduledBy, onOpenSchedule, scheduleHint, scheduleError, scheduling, collectionMovies, collectionTotal, hasCollectionArt, applyScope, scopeContext, onApplyScopeChange }: {
-  set: MediuxSetSummary
+  set: PosterSetSummary
   apply?: ApplyState
   onApply: () => void
   enabledTypes: Set<FileType>
@@ -1678,6 +1766,9 @@ function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, fo
   const [open, setOpen] = useState(false)
   const status = apply?.status ?? 'idle'
   const openCreator = useContext(CreatorNav)
+  const isPosterdb = set.source === 'posterdb'
+  // Radio groups must not collide when both sites contribute a set numbered the same.
+  const scopeName = `scope-movies-${setKey(set)}`
 
   const scopeBlocksApply = applyScope != null
     && applyScope.movies === 'none'
@@ -1731,8 +1822,13 @@ function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, fo
           <div className={styles.setUploaderRow}>
             <button
               className={`${styles.setUploader} ${styles.uploaderLink}`}
-              onClick={() => openCreator(set.uploader)}
-              title={`View ${set.uploader} in Creators`}
+              // The Creators tab browses MediUX only, so a ThePosterDB uploader
+              // opens their profile on ThePosterDB instead of a tab that would
+              // come back empty.
+              onClick={() => isPosterdb
+                ? window.api.app.openExternal(creatorUrl(set.source, set.uploader))
+                : openCreator(set.uploader)}
+              title={isPosterdb ? `Open ${set.uploader} on ThePosterDB` : `View ${set.uploader} in Creators`}
             >
               {set.uploaderAvatar ? (
                 <img className={styles.avatar} src={set.uploaderAvatar} alt={set.uploader} />
@@ -1742,6 +1838,7 @@ function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, fo
               <span className={styles.uploaderName}>{set.uploader}</span>
               {followed && <Star size={10} className={styles.followStar} />}
             </button>
+            <Badge variant={set.source}>{SOURCE_SHORT[set.source]}</Badge>
             {!title && badge}
           </div>
 
@@ -1807,7 +1904,7 @@ function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, fo
                   <label className={styles.scopeRadio}>
                     <input
                       type="radio"
-                      name={`scope-movies-${set.id}`}
+                      name={scopeName}
                       checked={applyScope.movies === 'this'}
                       onChange={() => onApplyScopeChange({ movies: 'this' })}
                     />
@@ -1816,7 +1913,7 @@ function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, fo
                   <label className={styles.scopeRadio}>
                     <input
                       type="radio"
-                      name={`scope-movies-${set.id}`}
+                      name={scopeName}
                       checked={applyScope.movies === 'all'}
                       onChange={() => onApplyScopeChange({ movies: 'all' })}
                     />
@@ -1831,7 +1928,7 @@ function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, fo
                   <label className={styles.scopeRadio}>
                     <input
                       type="radio"
-                      name={`scope-movies-${set.id}`}
+                      name={scopeName}
                       checked={applyScope.movies === 'all'}
                       onChange={() => onApplyScopeChange({ movies: 'all' })}
                     />
@@ -1984,7 +2081,7 @@ function normalizeUsername(input: string): string {
 /** Creators view: followed-creator rail plus the selected creator's sets. */
 function CreatorsView({ initialCreator }: { initialCreator: string | null }) {
   const [subs, setSubs]       = useState<string[]>([])
-  const [appliedIdx, setAppliedIdx] = useState<AppliedIndex>({ setIds: new Set(), titles: new Set(), posterUrls: new Set(), currentByItem: new Map(), currentPosterUrls: new Set() })
+  const [appliedIdx, setAppliedIdx] = useState<AppliedIndex>({ setKeys: new Set(), titles: new Set(), posterUrls: new Set(), currentByItem: new Map(), currentPosterUrls: new Set() })
   const [active, setActive]   = useState<string | null>(null)
   const [adding, setAdding]   = useState('')
 
@@ -2079,11 +2176,11 @@ function CreatorsView({ initialCreator }: { initialCreator: string | null }) {
             appliedIdx={appliedIdx}
             onFollow={() => follow(active)}
             onUnfollow={() => removeCreator(active)}
-            onApplied={(setId, itemKey, title, year, urls) => setAppliedIdx(prev => ({
-              setIds: new Set(prev.setIds).add(setId),
+            onApplied={(sKey, itemKey, title, year, urls) => setAppliedIdx(prev => ({
+              setKeys: new Set(prev.setKeys).add(sKey),
               titles: new Set(prev.titles).add(appliedKey(title, year)),
               posterUrls: new Set([...prev.posterUrls, ...urls]),
-              currentByItem: new Map(prev.currentByItem).set(itemKey, setId),
+              currentByItem: new Map(prev.currentByItem).set(itemKey, sKey),
               currentPosterUrls: new Set([...prev.currentPosterUrls, ...urls]),
             }))}
           />
@@ -2143,7 +2240,8 @@ function CreatorSets({ username, following, appliedIdx, onFollow, onUnfollow, on
   appliedIdx: AppliedIndex
   onFollow: () => void
   onUnfollow: () => void
-  onApplied: (setId: string, itemKey: string, title: string, year: number | undefined, urls: string[]) => void
+  /** Reports an applied set by its source-qualified setKey(). */
+  onApplied: (sKey: string, itemKey: string, title: string, year: number | undefined, urls: string[]) => void
 }) {
   const { navigate } = useAppContext()
   const [sets, setSets]       = useState<MediuxUserSet[]>([])
@@ -2442,7 +2540,7 @@ function CreatorSets({ username, following, appliedIdx, onFollow, onUnfollow, on
         source: 'mediux', thumb: s.previewUrl, setId: s.id, uploader: s.uploader,
         posterUrls: allAppliedUrls, slots: allAppliedSlots, appliedAt: new Date().toISOString(),
       }).then(() => undefined, (err: unknown) => errorMessage(err))
-      onApplied(s.id, s.matchedKey, s.title, s.year, allAppliedUrls)
+      onApplied(setKey(s), s.matchedKey, s.title, s.year, allAppliedUrls)
     }
     setApplyMap(m => ({
       ...m,
@@ -2481,7 +2579,7 @@ function CreatorSets({ username, following, appliedIdx, onFollow, onUnfollow, on
         source: 'mediux', thumb: file.thumbUrl ?? file.url, setId: s.id, uploader: s.uploader,
         posterUrls: appliedUrls, slots: appliedSlots, appliedAt: new Date().toISOString(),
       })
-      onApplied(s.id, s.matchedKey, s.title, s.year, appliedUrls)
+      onApplied(setKey(s), s.matchedKey, s.title, s.year, appliedUrls)
     }
     setApplyMap(m => ({ ...m, [key]: { status: done ? 'done' : 'error', done, total: 1, error: lastError } }))
   }
@@ -2527,8 +2625,8 @@ function CreatorSets({ username, following, appliedIdx, onFollow, onUnfollow, on
   const selectedVisible = setsFiltered.filter(s => selected.has(s.id)).length
 
   const renderSetCard = (s: MediuxUserSet) => {
-    const isCurrent    = !!s.matchedKey && appliedIdx.currentByItem.get(s.matchedKey) === s.id
-    const wasApplied   = appliedIdx.setIds.has(s.id)
+    const isCurrent    = !!s.matchedKey && appliedIdx.currentByItem.get(s.matchedKey) === setKey(s)
+    const wasApplied   = appliedIdx.setKeys.has(setKey(s))
     const titleApplied = appliedIdx.titles.has(appliedKey(s.title, s.year))
     const isScheduled  = !!coveringJob(coverage, s.id, username)
     const matchBadge = s.matchedKey

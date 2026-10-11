@@ -4,6 +4,17 @@ Release notes for Plex Poster Set Helper 2. The Build & Release workflow reads t
 section whose heading matches the pushed tag and uses it as the GitHub release body,
 so keep each version under its own `## What's new in vX.Y.Z` heading.
 
+<<<<<<< HEAD
+## Unreleased
+
+### ThePosterDB sets in the Library Browser
+The Library Browser now searches **ThePosterDB** alongside MediUX. Open any movie, show, or collection and both sites' sets appear in the same list, each card tagged with where it came from, and new **Both / MediUX / ThePosterDB** chips narrow the list to one source. Apply, Schedule, the Applied/Downloaded badges and the Reset page all work the same for either source; scheduling a ThePosterDB set creates a weekly sync against its `theposterdb.com/set/...` link.
+
+Because ThePosterDB has no public ID search, it is matched on title and year rather than TMDB ID. That has a useful side effect: titles Plex stores without a TMDB ID - where the panel previously showed only a "No TMDB match" message - now still get ThePosterDB sets, with a note explaining why MediUX is missing.
+
+Thumbnails on ThePosterDB pages are also read from the page's real artwork now instead of falling back to downloading the full-size image for every preview.
+
+>>>>>>> 44b88a2 (feat(library): browse ThePosterDB sets alongside MediUX)
 ## What's new in v2.9.2
 
 ### Applied art is recorded again in the web UI
@@ -125,6 +136,7 @@ The web and Docker API now rate limits requests per client, with a much smaller 
 
 ### Dependency updates
 Electron 44, Playwright 1.63, Fastify 5.12.5, React 19.3, Vite 8.3, and the rest of the toolchain are current, which clears every open security advisory.
+=======
 ## What's new in v2.3.0
 
 ### Collection posters apply correctly from the Collections tab
