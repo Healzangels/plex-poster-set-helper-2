@@ -1763,6 +1763,8 @@ function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, fo
 }) {
   const [err, setErr]               = useState(false)
   const [previewLoaded, setPreviewLoaded] = useState(false)
+  // ThePosterDB avatars are guessed from the username; users without one 403.
+  const [avatarFailed, setAvatarFailed] = useState(false)
   const [open, setOpen] = useState(false)
   const status = apply?.status ?? 'idle'
   const openCreator = useContext(CreatorNav)
@@ -1830,8 +1832,8 @@ function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, fo
                 : openCreator(set.uploader)}
               title={isPosterdb ? `Open ${set.uploader} on ThePosterDB` : `View ${set.uploader} in Creators`}
             >
-              {set.uploaderAvatar ? (
-                <img className={styles.avatar} src={set.uploaderAvatar} alt={set.uploader} />
+              {set.uploaderAvatar && !avatarFailed ? (
+                <img className={styles.avatar} src={set.uploaderAvatar} alt={set.uploader} onError={() => setAvatarFailed(true)} />
               ) : (
                 <div className={styles.avatarFallback}><User size={11} /></div>
               )}

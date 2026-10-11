@@ -1,5 +1,5 @@
 import * as cheerio from 'cheerio'
-import { BaseScraper, sleepConfig, mapPool } from './baseScraper'
+import { BaseScraper, sleepConfig, mapPool, USER_AGENTS } from './baseScraper'
 import { Logger } from '../services/logger'
 import type { PosterInfo, PosterSetSummary } from '../ipc/types'
 
@@ -330,6 +330,88 @@ function classifySetPosters(
   })
 }
 
+/** How long a resolved avatar (or the absence of one) is trusted. */
+const AVATAR_TTL = 24 * 60 * 60 * 1000
+/** Parallel profile-page fetches while resolving avatars. */
+const AVATAR_FETCH_CONCURRENCY = 4
+
+/** Resolved avatars by lowercased username; null means "show the generic icon". */
+const avatarCache = new Map<string, { url: string | null; at: number }>()
+
+/**
+ * Where a custom upload would live: the CDN path is built from the username.
+ * Only a fallback for when the profile page can't be read - users who never
+ * uploaded an avatar 403 here, and the card then shows its generic icon.
+ *
+ * @param username - Uploader name as shown on the site.
+ * @returns The guessed CDN URL.
+ */
+function guessedAvatarUrl(username: string): string {
+  return `https://images.theposterdb.com/prod/public/images/users/${encodeURIComponent(username)}/avatar.webp`
+}
+
+/**
+ * Reads the avatar a profile page actually shows. That is either a custom
+ * upload on the image CDN or one of the site's stock pictures, which it
+ * assigns per user server-side - so it can only be learned from the page.
+ *
+ * @param $ - Cheerio handle over the profile HTML.
+ * @returns The avatar URL, null for the site's gray "missing avatar"
+ *   silhouette (the app's own icon looks the same and fits the theme), or
+ *   undefined when the page has no avatar element at all.
+ */
+function parseProfileAvatar($: cheerio.CheerioAPI): string | null | undefined {
+  const $img = $('img.tpdb-avatar').first()
+  if (!$img.length) return undefined
+  const raw =
+    $img.closest('picture').find('source[type="image/webp"]').first().attr('srcset') ||
+    $img.attr('src') ||
+    ''
+  const src = raw.split(',')[0].trim().split(/\s+/)[0]
+  if (!src || src.includes('missing_avatar')) return null
+  return src.startsWith('http') ? src : `${BASE}${src}`
+}
+
+/**
+ * Resolves the avatar for each uploader by reading their profile page over
+ * plain HTTP - profiles aren't bot-gated the way set pages are, so this skips
+ * the headless browser and costs well under a second per uploader. Results are
+ * cached for a day; a failed fetch falls back to the guessed CDN URL without
+ * caching, so a hiccup isn't remembered.
+ *
+ * @param usernames - Uploaders to resolve; duplicates are fine.
+ * @returns Lowercased username to avatar URL (null = generic icon).
+ */
+async function resolveAvatars(usernames: string[]): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>()
+  const pending: string[] = []
+  for (const name of new Set(usernames)) {
+    if (!name || name === 'Unknown') continue
+    const hit = avatarCache.get(name.toLowerCase())
+    if (hit && Date.now() - hit.at < AVATAR_TTL) out.set(name.toLowerCase(), hit.url)
+    else pending.push(name)
+  }
+
+  await mapPool(pending, AVATAR_FETCH_CONCURRENCY, async name => {
+    const key = name.toLowerCase()
+    try {
+      const res = await fetch(`${BASE}/user/${encodeURIComponent(name)}`, {
+        headers: { 'User-Agent': USER_AGENTS[0], Accept: 'text/html' },
+        signal: AbortSignal.timeout(10_000),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const found = parseProfileAvatar(cheerio.load(await res.text()))
+      if (found === undefined) throw new Error('no avatar element on profile page')
+      avatarCache.set(key, { url: found, at: Date.now() })
+      out.set(key, found)
+    } catch (err) {
+      Logger.warn('PosterDB', `Avatar lookup failed for "${name}": ${err instanceof Error ? err.message : err}`)
+      out.set(key, guessedAvatarUrl(name))
+    }
+  })
+  return out
+}
+
 /**
  * Builds the library-browser summary for one set.
  *
@@ -590,6 +672,10 @@ export class PosterdbScraper extends BaseScraper {
     const capped = stubs.length > MAX_BROWSE_SETS
     const wanted = stubs.slice(0, MAX_BROWSE_SETS)
 
+    // Avatars resolve over plain HTTP alongside the set expansion, so they add
+    // no wait of their own.
+    const avatarsP = resolveAvatars(wanted.map(s => s.uploader))
+
     const summaries = await mapPool(wanted, SET_FETCH_CONCURRENCY, async stub => {
       // A one-poster set is fully described by the card we already have, so the
       // common movie case costs no extra page loads at all.
@@ -609,7 +695,13 @@ export class PosterdbScraper extends BaseScraper {
       return stubToSummary(stub, posters, parsed.name || stub.card.title, type)
     })
 
-    const sets = summaries.filter((s): s is PosterSetSummary => s !== null && s.posters.length > 0)
+    const avatars = await avatarsP
+    const sets = summaries
+      .filter((s): s is PosterSetSummary => s !== null && s.posters.length > 0)
+      .map(s => {
+        const avatar = avatars.get(s.uploader.toLowerCase())
+        return avatar ? { ...s, uploaderAvatar: avatar } : s
+      })
     Logger.scrape(
       'PosterDB',
       `Browse ${type} "${title}"${year ? ` (${year})` : ''} - ${sets.length} set(s) from /posters/${media.mediaId}${capped ? ` (capped at ${MAX_BROWSE_SETS})` : ''}`,
