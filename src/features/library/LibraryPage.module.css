@@ -1743,8 +1743,8 @@
   flex-shrink: 0;
 }
 
-/* Uploader, then the source badge, with any applied/match badge pushed right.
-   With no applied badge the source badge takes that trailing slot itself. */
+/* Uploader, source badge and follow/hide toggles together, with any
+   applied/match badge pushed to the right edge. */
 .setUploaderRow {
   display: flex;
   align-items: center;
@@ -1753,6 +1753,9 @@
 }
 
 .setUploaderRow > :last-child { margin-left: auto; }
+/* ...but the follow/hide toggles belong beside the name, not at the far edge
+   when the card has no trailing badge. */
+.setUploaderRow > .creatorActions:last-child { margin-left: 0; }
 
 .setCardChecked {
   border-color: var(--color-accent);
@@ -1970,3 +1973,65 @@
   text-decoration: underline;
 }
 .noteSearchLink:hover { color: var(--color-accent-hover); }
+
+/* -- Follow / hide creators ------------------------------------------------ */
+
+/* Star + eye toggles beside the uploader. Quiet until the card is hovered,
+   except an active follow, which stays lit so followed cards read at a glance. */
+.creatorActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.creatorAction {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--duration-fast), color var(--duration-fast), background var(--duration-fast);
+}
+
+.setCard:hover .creatorAction,
+.setCard:focus-within .creatorAction,
+.creatorActionOn { opacity: 1; }
+
+.creatorAction:hover { color: var(--color-text-primary); background: rgba(255, 255, 255, 0.06); }
+.creatorAction:focus-visible { opacity: 1; outline: 2px solid var(--color-accent-border); outline-offset: 1px; }
+.creatorActionOn { color: var(--color-accent); }
+
+/* Touch screens have no hover: keep the toggles visible. */
+@media (hover: none) {
+  .creatorAction { opacity: 1; }
+}
+
+/* A hidden creator's set, revealed via the "Show" toggle. */
+.setCardHidden { opacity: 0.55; }
+.setCardHidden:hover, .setCardHidden:focus-within { opacity: 1; }
+
+.hiddenToggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: var(--space-2);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: color var(--duration-fast), border-color var(--duration-fast);
+}
+
+.hiddenToggle:hover { color: var(--color-text-primary); border-color: rgba(255, 255, 255, 0.18); }
+
+/* The Hidden rail list sits under Following and should not fight it for room. */
+.creatorListHidden { flex: 0 1 auto; max-height: 30%; }

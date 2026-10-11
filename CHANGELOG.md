@@ -7,6 +7,9 @@ so keep each version under its own `## What's new in vX.Y.Z` heading.
 <<<<<<< HEAD
 ## Unreleased
 
+### Follow and hide creators from any set
+Every set card in the Library Browser now has a **star** and an **eye** next to the uploader. The star follows them (their sets come first and are highlighted, as before), and now works for **ThePosterDB** creators too. The eye hides them: their sets drop out of every title's list, with a "N sets from hidden creators · Show" line to bring them back for that title. A creator is followed or hidden, never both, and the same name on MediUX and ThePosterDB counts as two different people. The **Creators** tab lists hidden creators under a new **Hidden** heading, where they can be unhidden, and its header gains a **Hide** button.
+
 ### ThePosterDB sets in the Library Browser
 The Library Browser now searches **ThePosterDB** alongside MediUX. Open any movie, show, or collection and both sites' sets appear in the same list, each card tagged with where it came from, and new **Both / MediUX / ThePosterDB** chips narrow the list to one source. Apply, Schedule, the Applied/Downloaded badges and the Reset page all work the same for either source; scheduling a ThePosterDB set creates a weekly sync against its `theposterdb.com/set/...` link.
 

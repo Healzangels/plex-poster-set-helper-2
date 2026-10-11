@@ -28,6 +28,8 @@ const DEFAULTS: AppConfig = {
   scheduledJobs: [],
   tmdbApiKey: '',
   mediuxSubscriptions: [],
+  posterdbSubscriptions: [],
+  hiddenCreators: [],
   appliedPosters: [],
   trayNotice: true,
   excludedLibraries: [],

@@ -162,8 +162,15 @@ export interface AppConfig {
   schedulerQuickCron?: string
   /** Optional - enables tvdb/imdb to tmdb resolution for legacy/HAMA libraries. */
   tmdbApiKey?: string
-  /** Followed MediUX usernames. */
+  /** Followed MediUX usernames. Also drives the Creators tab and creator syncs. */
   mediuxSubscriptions?: string[]
+  /**
+   * Followed ThePosterDB usernames. Kept apart from the MediUX list because the
+   * two sites' usernames are separate namespaces - same name, different person.
+   */
+  posterdbSubscriptions?: string[]
+  /** Creators whose sets the Library Browser tucks away behind a "Show" toggle. */
+  hiddenCreators?: HiddenCreator[]
   /** Local history of applied poster sets (source of truth for Reset). */
   appliedPosters?: AppliedRecord[]
   /** Show the "minimized to tray" notification (default true). */
@@ -180,6 +187,12 @@ export interface AppConfig {
   browserExecutablePath?: string
   /** Signature of the browser executable that last passed a launch check. */
   browserVerified?: string
+}
+
+/** A creator the user chose to hide, scoped to the site they publish on. */
+export interface HiddenCreator {
+  source: 'mediux' | 'posterdb'
+  username: string
 }
 
 /**

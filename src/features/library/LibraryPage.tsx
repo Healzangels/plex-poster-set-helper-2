@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo, createContext, useContext } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Search, X, Upload, Check, AlertCircle, Loader2, User, Image as ImageIcon, ChevronDown, ChevronUp, Plus, UserPlus, Trash2, CalendarClock, CheckCircle2, RefreshCw, Star, Library, Download, LayoutGrid, Users, Film, Tv, Layers, ArrowUp, ArrowDown } from 'lucide-react'
+import { Search, X, Upload, Check, AlertCircle, Loader2, User, Image as ImageIcon, ChevronDown, ChevronUp, Plus, UserPlus, Trash2, CalendarClock, CheckCircle2, RefreshCw, Star, Library, Download, LayoutGrid, Users, Film, Tv, Layers, ArrowUp, ArrowDown, Eye, EyeOff } from 'lucide-react'
 import type { ScheduledJob } from '../../../electron/ipc/types'
 import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
@@ -11,6 +11,7 @@ import Lightbox, { type LightboxImage } from '../../components/ui/Lightbox'
 import Pager from '../../components/ui/Pager'
 import PlexConnectBanner from '../../components/ui/PlexConnectBanner'
 import { groupPosters, posterFileType, setKey, ALL_TYPES, defaultSetApplyScope, type FileType, type SetApplyScope, type SetSource } from '../../utils/posterGroups'
+import { useCreatorPrefs, type CreatorState } from '../../utils/creatorPrefs'
 import { recordApplied, recordAppliedBatch, recordAppliedQuietly, appliedKey, loadAppliedIndex, type AppliedIndex } from '../../utils/appliedTracker'
 import { uuid } from '../../utils/uuid'
 import { errorMessage } from '../../utils/errorMessage'
@@ -203,21 +204,8 @@ async function applyPosters(
 /** Lets any nested set card jump to a creator in the Creators tab. */
 const CreatorNav = createContext<(username: string) => void>(() => {})
 
-/**
- * Reads the followed-creator usernames from config.
- *
- * @returns Lowercased usernames, loaded once on mount.
- */
-function useSubscriptions() {
-  const [subs, setSubs] = useState<string[]>([])
-  useEffect(() => {
-    window.api.config.get().then(c => setSubs((c.mediuxSubscriptions ?? []).map(s => s.toLowerCase())))
-  }, [])
-  return subs
-}
-
 /** Plex library grid with per-section tabs, cross-library search, and the poster-sets panel. */
-function MyLibraryView({ subs, targetSection, targetItem }: { subs: string[]; targetSection: string | null; targetItem: LibraryItem | null }) {
+function MyLibraryView({ targetSection, targetItem }: { targetSection: string | null; targetItem: LibraryItem | null }) {
   const [sections, setSections]   = useState<LibrarySection[]>([])
   const [activeKey, setActiveKey] = useState<string>('')
 
@@ -656,7 +644,6 @@ function MyLibraryView({ subs, targetSection, targetItem }: { subs: string[]; ta
           <SetsPanel
             key="sets-panel"
             item={selected}
-            subs={subs}
             onClose={() => setSelected(null)}
             onItemPoster={(key, thumb) => {
               setItems(prev => prev.map(it => it.key === key ? { ...it, thumb } : it))
@@ -680,9 +667,10 @@ export default function LibraryPage() {
   const [creatorTarget, setCreatorTarget] = useState<string | null>(null)
   const [sectionTarget, setSectionTarget] = useState<string | null>(null)
   const [itemTarget, setItemTarget] = useState<LibraryItem | null>(null)
-  const subs = useSubscriptions()
   const libraryIntent = useNavStore(s => s.libraryIntent)
   const clearLibrary  = useNavStore(s => s.clearLibrary)
+  const { prefs: creatorPrefs } = useCreatorPrefs()
+  const followCount = creatorPrefs.mediuxFollows.length + creatorPrefs.posterdbFollows.length
 
   const openCreator = useCallback((username: string) => {
     setCreatorTarget(username)
@@ -740,8 +728,8 @@ export default function LibraryPage() {
               )}
               <Users size={14} />
               <span>Creators</span>
-              {subs.length > 0 && (
-                <span className={styles.tabBadge}>{subs.length}</span>
+              {followCount > 0 && (
+                <span className={styles.tabBadge}>{followCount}</span>
               )}
             </button>
           </div>
@@ -750,7 +738,7 @@ export default function LibraryPage() {
         {!plexConnected ? (
           <PlexConnectBanner />
         ) : mode === 'library' ? (
-          <MyLibraryView subs={subs} targetSection={sectionTarget} targetItem={itemTarget} />
+          <MyLibraryView targetSection={sectionTarget} targetItem={itemTarget} />
         ) : (
           <CreatorsView initialCreator={creatorTarget} />
         )}
@@ -881,9 +869,8 @@ function CurrentArtStrip({ slots, loading }: { slots: PlexArtSlot[]; loading: bo
   )
 }
 
-function SetsPanel({ item, subs, onClose, onItemPoster }: {
+function SetsPanel({ item, onClose, onItemPoster }: {
   item: LibraryItem
-  subs: string[]
   onClose: () => void
   onItemPoster: (key: string, thumb: string) => void
 }) {
@@ -896,6 +883,9 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
   const [tmdbMissing, setTmdbMissing] = useState(false)
   const [uploader, setUploader] = useState<string>('all')
   const [source, setSource]     = useState<SetSource | 'all'>('all')
+  // Reveals hidden creators' sets for this title, until the next title.
+  const [showHidden, setShowHidden] = useState(false)
+  const { stateOf, setState: setCreatorState } = useCreatorPrefs()
   const [types, setTypes]       = useState<Set<FileType>>(new Set(ALL_TYPES))
   const [applyMap, setApplyMap] = useState<Record<string, ApplyState>>({})
   // Per-set apply scope: movies and collection poster are chosen independently.
@@ -934,13 +924,13 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
   useEffect(() => {
     setUploader('all')
     setSource('all')
+    setShowHidden(false)
     setApplyMap({})
     setCollectionScope({})
     setSchedulingId(null)
     panelBodyRef.current?.scrollTo({ top: 0 })
   }, [item.key])
 
-  const subSet = useMemo(() => new Set(subs), [subs])
   const isCollectionItem = item.type === 'collection'
   const itemApplied = isCollectionItem
     ? appliedIdx.currentByItem.has(item.key)
@@ -1079,11 +1069,9 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
       else if (res.error) setError(res.error)
       setResolvedTmdbId(res.tmdbId)
       setTmdbMissing(!!res.tmdbMissing)
-      const sorted = [...res.sets].sort((a, b) => {
-        const fa = subSet.has(a.uploader.toLowerCase()) ? 0 : 1
-        const fb = subSet.has(b.uploader.toLowerCase()) ? 0 : 1
-        return fa - fb || a.uploader.localeCompare(b.uploader)
-      })
+      // Alphabetical by uploader; followed/hidden ordering is applied live in
+      // visibleSets, so it follows a follow or hide without a reload.
+      const sorted = [...res.sets].sort((a, b) => a.uploader.localeCompare(b.uploader))
       browseSetsCache.set(key, {
         sets: sorted,
         tmdbId: res.tmdbId,
@@ -1102,7 +1090,7 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
       }
     })
     return () => { cancelled = true }
-  }, [item.key, item.type, item.title, item.tmdbId, item.tvdbId, item.imdbId, item.anidbId, isCollectionItem, subSet, setsReloadKey])
+  }, [item.key, item.type, item.title, item.tmdbId, item.tvdbId, item.imdbId, item.anidbId, isCollectionItem, setsReloadKey])
 
   function refreshSets() {
     browseSetsCache.delete(browseCacheKey(item))
@@ -1206,30 +1194,41 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
     [sets, source],
   )
 
+  const creatorOf = useCallback((s: PosterSetSummary) => stateOf(s.source, s.uploader), [stateOf])
+
   const uploaders = useMemo(() => {
-    // Followed uploaders first, then the rest alphabetically
-    const all = Array.from(new Set(sourceSets.map(s => s.uploader)))
-    all.sort((a, b) => {
-      const fa = subSet.has(a.toLowerCase()) ? 0 : 1
-      const fb = subSet.has(b.toLowerCase()) ? 0 : 1
-      return fa - fb || a.localeCompare(b)
-    })
+    // Followed uploaders first, then the rest alphabetically. Hidden ones are
+    // left out unless revealed - picking one would show a list of nothing.
+    const rank = new Map<string, number>()
+    for (const s of sourceSets) {
+      const st = creatorOf(s)
+      if (st === 'hidden' && !showHidden) continue
+      const r = st === 'followed' ? 0 : st === 'hidden' ? 2 : 1
+      rank.set(s.uploader, Math.min(rank.get(s.uploader) ?? r, r))
+    }
+    const all = [...rank.keys()].sort((a, b) => rank.get(a)! - rank.get(b)! || a.localeCompare(b))
     return ['all', ...all]
-  }, [sourceSets, subSet])
+  }, [sourceSets, creatorOf, showHidden])
 
   // An uploader picked before switching source may not exist in the new one.
   // Derived rather than reset in an effect, so the stale value falls back to
   // "all" in the same render instead of flashing an empty list first.
   const activeUploader = uploader !== 'all' && !uploaders.includes(uploader) ? 'all' : uploader
 
-  const visibleSets = useMemo(
+  const { visibleSets, hiddenCount } = useMemo(
     () => {
       const byUploader = activeUploader === 'all' ? sourceSets : sourceSets.filter(s => s.uploader === activeUploader)
       // Hide sets that have nothing to apply under the current type filter, so
       // the chips actually narrow the result list instead of only dimming art.
-      return byUploader.filter(s => s.posters.some(p => types.has(posterFileType(p))))
+      const matching = byUploader.filter(s => s.posters.some(p => types.has(posterFileType(p))))
+      const hiddenCount = matching.filter(s => creatorOf(s) === 'hidden').length
+      const rank = (s: PosterSetSummary) => { const st = creatorOf(s); return st === 'followed' ? 0 : st === 'hidden' ? 2 : 1 }
+      const shown = showHidden ? matching : matching.filter(s => creatorOf(s) !== 'hidden')
+      // Stable sort: followed first, revealed hidden sets last, otherwise the
+      // order the sets arrived in.
+      return { visibleSets: [...shown].sort((a, b) => rank(a) - rank(b)), hiddenCount }
     },
-    [sourceSets, activeUploader, types],
+    [sourceSets, activeUploader, types, creatorOf, showHidden],
   )
 
   function toggleType(t: FileType) {
@@ -1628,7 +1627,7 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
           <div className={styles.panelNotice}><ImageIcon size={20} /><p>No sets found for this title on MediUX or ThePosterDB.</p></div>
         )}
 
-        {!loading && !error && sets.length > 0 && visibleSets.length === 0 && (
+        {!loading && !error && sets.length > 0 && visibleSets.length === 0 && hiddenCount === 0 && (
           <div className={styles.panelNotice}><ImageIcon size={20} /><p>No sets match the current filters.</p></div>
         )}
 
@@ -1668,7 +1667,8 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
               apply={applyMap[sKey]}
               onApply={() => applySet(s)}
               enabledTypes={types}
-              followed={subSet.has(s.uploader.toLowerCase())}
+              creator={creatorOf(s)}
+              onCreatorChange={state => { void setCreatorState(s.source, s.uploader, state) }}
               badge={badge}
               onSchedule={() => scheduleSet(s)}
               scheduledBy={scheduledBy ? `${scheduledBy.name} · ${describeCron(scheduledBy.cronExpr)}` : undefined}
@@ -1691,6 +1691,17 @@ function SetsPanel({ item, subs, onClose, onItemPoster }: {
             />
           )
         })}
+
+        {/* Hidden creators' sets are tucked away, not deleted: say how many
+            there are so a short list isn't mistaken for a short catalog. */}
+        {!loading && !error && hiddenCount > 0 && (
+          <button className={styles.hiddenToggle} onClick={() => setShowHidden(v => !v)}>
+            {showHidden ? <EyeOff size={13} /> : <Eye size={13} />}
+            {showHidden
+              ? `Hide ${hiddenCount} set${hiddenCount !== 1 ? 's' : ''} from hidden creators`
+              : `${hiddenCount} set${hiddenCount !== 1 ? 's' : ''} from hidden creators · Show`}
+          </button>
+        )}
         </motion.div>
       </div>
     </motion.div>
@@ -1720,7 +1731,7 @@ function ThumbButton({ url, label, episode, onClick }: { url: string; label: str
 }
 
 /** Expandable card for one poster set: preview, uploader, source, counts, apply state, and grouped posters. */
-function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, followed, selectable, checked, onToggleSelect, onSchedule, scheduledBy, onOpenSchedule, scheduleHint, scheduleError, scheduling, collectionMovies, collectionTotal, hasCollectionArt, applyScope, scopeContext, onApplyScopeChange }: {
+function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, creator = 'none', onCreatorChange, selectable, checked, onToggleSelect, onSchedule, scheduledBy, onOpenSchedule, scheduleHint, scheduleError, scheduling, collectionMovies, collectionTotal, hasCollectionArt, applyScope, scopeContext, onApplyScopeChange }: {
   set: PosterSetSummary
   apply?: ApplyState
   onApply: () => void
@@ -1731,8 +1742,10 @@ function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, fo
   badge?: React.ReactNode
   /** Disables Apply (e.g. no library match). */
   disabled?: boolean
-  /** Uploader is a followed creator. */
-  followed?: boolean
+  /** Whether the uploader is followed or hidden. */
+  creator?: CreatorState
+  /** Follow, hide or reset the uploader; omit to show no creator controls. */
+  onCreatorChange?: (state: CreatorState) => void
   /** Shows a selection checkbox (Creators sync). */
   selectable?: boolean
   checked?: boolean
@@ -1795,7 +1808,7 @@ function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, fo
   )
 
   return (
-    <div className={`${styles.setCard} ${followed ? styles.setCardFollowed : ''} ${checked ? styles.setCardChecked : ''}`}>
+    <div className={`${styles.setCard} ${creator === 'followed' ? styles.setCardFollowed : ''} ${creator === 'hidden' ? styles.setCardHidden : ''} ${checked ? styles.setCardChecked : ''}`}>
       <div className={styles.setRow}>
         {selectable && (
           <div className={styles.setSelect}>
@@ -1838,9 +1851,29 @@ function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, fo
                 <div className={styles.avatarFallback}><User size={11} /></div>
               )}
               <span className={styles.uploaderName}>{set.uploader}</span>
-              {followed && <Star size={10} className={styles.followStar} />}
+              {creator === 'followed' && !onCreatorChange && <Star size={10} className={styles.followStar} />}
             </button>
             <Badge variant={set.source}>{SOURCE_SHORT[set.source]}</Badge>
+            {onCreatorChange && (
+              <div className={styles.creatorActions}>
+                <button
+                  className={`${styles.creatorAction} ${creator === 'followed' ? styles.creatorActionOn : ''}`}
+                  onClick={() => onCreatorChange(creator === 'followed' ? 'none' : 'followed')}
+                  title={creator === 'followed' ? `Unfollow ${set.uploader}` : `Follow ${set.uploader} - their sets come first and are highlighted`}
+                  aria-pressed={creator === 'followed'}
+                >
+                  <Star size={12} fill={creator === 'followed' ? 'currentColor' : 'none'} />
+                </button>
+                <button
+                  className={`${styles.creatorAction} ${creator === 'hidden' ? styles.creatorActionOn : ''}`}
+                  onClick={() => onCreatorChange(creator === 'hidden' ? 'none' : 'hidden')}
+                  title={creator === 'hidden' ? `Unhide ${set.uploader}` : `Hide ${set.uploader}'s sets`}
+                  aria-pressed={creator === 'hidden'}
+                >
+                  {creator === 'hidden' ? <Eye size={12} /> : <EyeOff size={12} />}
+                </button>
+              </div>
+            )}
             {!title && badge}
           </div>
 
@@ -2080,52 +2113,43 @@ function normalizeUsername(input: string): string {
   return (m ? m[1] : t).replace(/^@/, '').trim()
 }
 
-/** Creators view: followed-creator rail plus the selected creator's sets. */
+/** Creators view: followed and hidden creator rails plus the selected creator's sets. */
 function CreatorsView({ initialCreator }: { initialCreator: string | null }) {
-  const [subs, setSubs]       = useState<string[]>([])
+  const { prefs, stateOf, setState } = useCreatorPrefs()
+  const subs = prefs.mediuxFollows
   const [appliedIdx, setAppliedIdx] = useState<AppliedIndex>({ setKeys: new Set(), titles: new Set(), posterUrls: new Set(), currentByItem: new Map(), currentPosterUrls: new Set() })
-  const [active, setActive]   = useState<string | null>(null)
+  // The creator picked in the rail (or via a clicked badge); until one is,
+  // the first followed creator is shown.
+  const [picked, setActive]   = useState<string | null>(null)
+  const active = picked ?? subs[0] ?? null
   const [adding, setAdding]   = useState('')
 
-  useEffect(() => {
-    window.api.config.get().then(c => {
-      const list = c.mediuxSubscriptions ?? []
-      setSubs(list)
-      if (list.length) setActive(prev => prev ?? list[0])
-    })
-    loadAppliedIndex().then(setAppliedIdx)
-  }, [])
+  useEffect(() => { loadAppliedIndex().then(setAppliedIdx) }, [])
 
   // A username arriving from a clicked badge (preview, may not be followed)
   useEffect(() => {
     if (initialCreator) setActive(initialCreator)
   }, [initialCreator])
 
-  async function persist(list: string[]) {
-    setSubs(list)
-    await window.api.config.set({ mediuxSubscriptions: list })
-  }
-
-  const isFollowing = (name: string) => subs.some(s => s.toLowerCase() === name.toLowerCase())
-
-  async function follow(name: string) {
-    if (isFollowing(name)) return
-    await persist([...subs, name])
-  }
+  // The Creators tab browses MediUX catalogs; ThePosterDB creators open on
+  // their own site instead.
+  const openTpdb = (name: string) => window.api.app.openExternal(creatorUrl('posterdb', name))
 
   async function addCreator() {
     const name = normalizeUsername(adding)
     if (!name) return
-    if (!isFollowing(name)) await persist([...subs, name])
+    if (stateOf('mediux', name) !== 'followed') await setState('mediux', name, 'followed')
     setActive(name)
     setAdding('')
   }
 
   async function removeCreator(name: string) {
-    const next = subs.filter(s => s.toLowerCase() !== name.toLowerCase())
-    await persist(next)
-    if (active?.toLowerCase() === name.toLowerCase()) setActive(next[0] ?? null)
+    const next = await setState('mediux', name, 'none')
+    if (active?.toLowerCase() === name.toLowerCase()) setActive(next.mediuxFollows[0] ?? null)
   }
+
+  const isActive = (name: string) => active?.toLowerCase() === name.toLowerCase()
+  const activeState = active ? stateOf('mediux', active) : 'none'
 
   return (
     <div className={styles.creators}>
@@ -2133,11 +2157,11 @@ function CreatorsView({ initialCreator }: { initialCreator: string | null }) {
       <div className={styles.creatorRail}>
         <div className={styles.railHeader}>Following</div>
         <div className={styles.creatorList}>
-          {subs.length === 0 && <p className={styles.railEmpty}>No creators yet. Add one below.</p>}
+          {subs.length === 0 && prefs.posterdbFollows.length === 0 && <p className={styles.railEmpty}>No creators yet. Add one below.</p>}
           {subs.map(name => (
             <div
-              key={name}
-              className={`${styles.creatorItem} ${active?.toLowerCase() === name.toLowerCase() ? styles.creatorItemActive : ''}`}
+              key={`mediux:${name}`}
+              className={`${styles.creatorItem} ${isActive(name) ? styles.creatorItemActive : ''}`}
               onClick={() => setActive(name)}
             >
               <Star size={12} className={styles.creatorStar} />
@@ -2147,7 +2171,49 @@ function CreatorsView({ initialCreator }: { initialCreator: string | null }) {
               </button>
             </div>
           ))}
+          {prefs.posterdbFollows.map(name => (
+            <div
+              key={`posterdb:${name}`}
+              className={styles.creatorItem}
+              onClick={() => openTpdb(name)}
+              title={`Open ${name} on ThePosterDB`}
+            >
+              <Star size={12} className={styles.creatorStar} />
+              <span className={styles.creatorName}>{name}</span>
+              <Badge variant="posterdb">TPDb</Badge>
+              <button className={styles.creatorRemove} onClick={e => { e.stopPropagation(); void setState('posterdb', name, 'none') }} title="Unfollow">
+                <Trash2 size={12} />
+              </button>
+            </div>
+          ))}
         </div>
+
+        {prefs.hidden.length > 0 && (
+          <>
+            <div className={styles.railHeader}>Hidden</div>
+            <div className={`${styles.creatorList} ${styles.creatorListHidden}`}>
+              {prefs.hidden.map(h => (
+                <div
+                  key={`${h.source}:${h.username}`}
+                  className={`${styles.creatorItem} ${h.source === 'mediux' && isActive(h.username) ? styles.creatorItemActive : ''}`}
+                  onClick={() => h.source === 'mediux' ? setActive(h.username) : openTpdb(h.username)}
+                  title={h.source === 'mediux' ? `Browse ${h.username}` : `Open ${h.username} on ThePosterDB`}
+                >
+                  <EyeOff size={12} className={styles.creatorStar} />
+                  <span className={styles.creatorName}>{h.username}</span>
+                  <Badge variant={h.source}>{SOURCE_SHORT[h.source]}</Badge>
+                  <button
+                    className={styles.creatorRemove}
+                    onClick={e => { e.stopPropagation(); void setState(h.source, h.username, 'none') }}
+                    title="Unhide"
+                  >
+                    <Eye size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
 
         <div className={styles.addCreator}>
           <span className={styles.addLabel}>Follow a creator</span>
@@ -2174,10 +2240,9 @@ function CreatorsView({ initialCreator }: { initialCreator: string | null }) {
           <CreatorSets
             key={active}
             username={active}
-            following={isFollowing(active)}
+            creator={activeState}
             appliedIdx={appliedIdx}
-            onFollow={() => follow(active)}
-            onUnfollow={() => removeCreator(active)}
+            onCreatorChange={state => { void setState('mediux', active, state) }}
             onApplied={(sKey, itemKey, title, year, urls) => setAppliedIdx(prev => ({
               setKeys: new Set(prev.setKeys).add(sKey),
               titles: new Set(prev.titles).add(appliedKey(title, year)),
@@ -2236,15 +2301,16 @@ const CREATOR_SETS_PER_PAGE = 24
 const CREATOR_FILES_PER_PAGE = 60
 
 /** A creator's recent sets with tabs, deep search, selection, and weekly-sync scheduling. */
-function CreatorSets({ username, following, appliedIdx, onFollow, onUnfollow, onApplied }: {
+function CreatorSets({ username, creator, appliedIdx, onCreatorChange, onApplied }: {
   username: string
-  following: boolean
+  /** Whether this MediUX creator is followed or hidden. */
+  creator: CreatorState
   appliedIdx: AppliedIndex
-  onFollow: () => void
-  onUnfollow: () => void
+  onCreatorChange: (state: CreatorState) => void
   /** Reports an applied set by its source-qualified setKey(). */
   onApplied: (sKey: string, itemKey: string, title: string, year: number | undefined, urls: string[]) => void
 }) {
+  const following = creator === 'followed'
   const { navigate } = useAppContext()
   const [sets, setSets]       = useState<MediuxUserSet[]>([])
   // First paint (nothing buffered yet) shows skeletons; `crawling` means a
@@ -2702,9 +2768,14 @@ function CreatorSets({ username, following, appliedIdx, onFollow, onUnfollow, on
         </div>
         <div className={styles.creatorBarActions}>
           {following ? (
-            <Button variant="secondary" size="sm" icon={<Star size={12} />} onClick={onUnfollow}>Following</Button>
+            <Button variant="secondary" size="sm" icon={<Star size={12} />} onClick={() => onCreatorChange('none')}>Following</Button>
           ) : (
-            <Button variant="primary" size="sm" icon={<UserPlus size={12} />} onClick={onFollow}>Follow</Button>
+            <Button variant="primary" size="sm" icon={<UserPlus size={12} />} onClick={() => onCreatorChange('followed')}>Follow</Button>
+          )}
+          {creator === 'hidden' ? (
+            <Button variant="secondary" size="sm" icon={<Eye size={12} />} onClick={() => onCreatorChange('none')}>Unhide</Button>
+          ) : (
+            <Button variant="ghost" size="sm" icon={<EyeOff size={12} />} onClick={() => onCreatorChange('hidden')}>Hide</Button>
           )}
           <Button
             variant="ghost"

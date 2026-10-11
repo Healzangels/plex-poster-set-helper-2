@@ -10,6 +10,7 @@ import type { LibrarySection, ScheduledJob, LibraryItem } from '../../../electro
 import { NAV_ENTRIES } from './navModel'
 import { useScrapeStore } from '../../features/scrape/useScrapeStore'
 import { useNavStore } from '../../app/navStore'
+import { setCreatorState } from '../../utils/creatorPrefs'
 import styles from './CommandPalette.module.css'
 
 interface Command {
@@ -154,13 +155,9 @@ export default function CommandPalette({ open, onClose, onNavigate, onToggleLogs
         label: `Follow @${name}`, sub: 'Add to your MediUX creators and open their sets',
         icon: <UserPlus size={16} />,
         run: async () => {
-          try {
-            const c = await window.api.config.get()
-            const cur = c.mediuxSubscriptions ?? []
-            if (!cur.some(s => s.toLowerCase() === name.toLowerCase())) {
-              await window.api.config.set({ mediuxSubscriptions: [...cur, name] })
-            }
-          } catch { /* config write best-effort */ }
+          // Through the shared prefs, so following also clears a hide and the
+          // Creators tab updates without a reload.
+          try { await setCreatorState('mediux', name, 'followed') } catch { /* config write best-effort */ }
           useNavStore.getState().goLibrary({ creator: name })
           onNavigate('library'); onClose()
         },
