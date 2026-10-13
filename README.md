@@ -150,7 +150,7 @@ That's it - head to the **Library Browser** and start applying posters.
 
 The **Scheduler** keeps sets and creators synced on a repeating schedule, which is great for shows that keep getting new episodes (so new title cards get art too) and for creators who keep uploading.
 
-- **Quick sync from the Library Browser:** click **Schedule** on any MediUX set, or **Sync all** on a creator, and new uploads that match your library are applied automatically. Repeat clicks never stack duplicate jobs, and a creator's sets are grouped into one job. Pick the schedule these buttons use under **Scheduler → Quick sync**.
+- **Quick sync from the Library Browser:** click **Schedule** on any set (MediUX or ThePosterDB), or **Sync all** on a creator, and new uploads that match your library are applied automatically. Repeat clicks never stack duplicate jobs, and a creator's sets are grouped into one job. Pick the schedule these buttons use under **Scheduler → Quick sync**.
 - **Whole creator catalogs:** a creator sync reads every set the creator has published. The first run crawls the full catalog once (a few minutes for a prolific creator); later runs only read pages with new or updated sets.
 - **Only new artwork:** each run skips posters already applied to an item, so Plex doesn't collect duplicate uploads. Turn it off for a job to re-apply the full set every run.
 - **Only fill gaps:** for a backup creator. The job leaves any poster, season, or episode that other art already covers, whether from another job or applied by hand, and adds only what is missing.
@@ -205,9 +205,9 @@ More detail (unraid, ports, volumes) in the [Docker guide](docker/README.md#upda
 | **[MediUX](https://mediux.pro)** | Set links (`/sets/123`), **boxsets** (`/boxsets/123` - a whole collection at once), and creator pages (`/user/name`). Full‑quality artwork, including season posters, title cards, and backdrops. |
 | **[ThePosterDB](https://theposterdb.com)** | Set links (`/set/123`), single posters (`/poster/123`), and user uploads (`/user/name`). |
 
-The **Library Browser** searches both sites at once: pick a title and its MediUX and ThePosterDB sets appear side by side, each card tagged with where it came from, with chips to show just one site's sets. MediUX is looked up by TMDB ID; ThePosterDB has no public ID search, so it is matched on title and year - which means it still finds art for titles Plex has no TMDB ID for.
-
 Posters are matched to your library by **TMDB ID** (read from each Plex item), so the right art lands on the right title. For titles Plex stores without a TMDB ID (or under a TVDB/IMDb agent), a free **TMDB API key** in Settings restores ID‑based matching - otherwise the tool falls back to title and year, which can miss renamed or subtitled entries. Anime under the **HAMA** agent (which tags titles with an AniDB ID) is converted to TMDB automatically using the open-source [Fribb/anime-lists](https://github.com/Fribb/anime-lists) dataset (cached locally), no key required. Everything you apply is tracked locally, so the **Reset** page always knows what's current, what was applied before, and where it came from.
+
+The **Library Browser** searches both sites at once: pick a title and its MediUX and ThePosterDB sets appear side by side, each card tagged with where it came from, with chips to show just one site's sets. MediUX is looked up by TMDB ID; ThePosterDB has no public ID search, so it is matched on title and year, which still finds art for titles that Plex stores without a TMDB ID.
 
 ---
 

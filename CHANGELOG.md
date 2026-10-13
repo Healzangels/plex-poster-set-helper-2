@@ -4,20 +4,20 @@ Release notes for Plex Poster Set Helper 2. The Build & Release workflow reads t
 section whose heading matches the pushed tag and uses it as the GitHub release body,
 so keep each version under its own `## What's new in vX.Y.Z` heading.
 
-<<<<<<< HEAD
-## Unreleased
-
-### Follow and hide creators from any set
-Every set card in the Library Browser now has a **star** and an **eye** next to the uploader. The star follows them (their sets come first and are highlighted, as before), and now works for **ThePosterDB** creators too. The eye hides them: their sets drop out of every title's list, with a "N sets from hidden creators · Show" line to bring them back for that title. A creator is followed or hidden, never both, and the same name on MediUX and ThePosterDB counts as two different people. The **Creators** tab lists hidden creators under a new **Hidden** heading, where they can be unhidden, and its header gains a **Hide** button.
+## What's new in v2.10.0
 
 ### ThePosterDB sets in the Library Browser
-The Library Browser now searches **ThePosterDB** alongside MediUX. Open any movie, show, or collection and both sites' sets appear in the same list, each card tagged with where it came from, and new **Both / MediUX / ThePosterDB** chips narrow the list to one source. Apply, Schedule, the Applied/Downloaded badges and the Reset page all work the same for either source; scheduling a ThePosterDB set creates a weekly sync against its `theposterdb.com/set/...` link.
+The Library Browser now searches **ThePosterDB** alongside MediUX. Open any movie, show, or collection and both sites' sets appear in the same list, each card tagged with where it came from, and **All / MediUX / ThePosterDB** chips narrow the list to one site whenever both have something. Apply, Schedule, the Applied/Downloaded badges and the Reset page work the same for either source; scheduling a ThePosterDB set creates a quick-sync job for its `theposterdb.com/set/...` link. MediUX results appear as soon as they arrive while ThePosterDB is still being searched, and a title with more ThePosterDB sets than the panel reads gets a link to continue on the site.
 
-Because ThePosterDB has no public ID search, it is matched on title and year rather than TMDB ID. That has a useful side effect: titles Plex stores without a TMDB ID - where the panel previously showed only a "No TMDB match" message - now still get ThePosterDB sets, with a note explaining why MediUX is missing.
+ThePosterDB has no public ID search, so titles are matched by name and year. That has a useful side effect: titles Plex stores without a TMDB ID, where the panel previously showed only a "No TMDB match" message, now still get ThePosterDB sets, with a note explaining why MediUX is missing. The match walks several pages of search results and insists on the year, so an older film whose name was reused is found rather than mistaken for the remake, and titles with their own parenthetical, non-Latin names, and country suffixes such as "The Office (US)" resolve too.
 
-Thumbnails on ThePosterDB pages are also read from the page's real artwork now instead of falling back to downloading the full-size image for every preview.
+Thumbnails on ThePosterDB pages are also read from the page's real artwork instead of falling back to the full-size image for every preview, and ThePosterDB uploaders show their avatar.
 
->>>>>>> 44b88a2 (feat(library): browse ThePosterDB sets alongside MediUX)
+### Follow and hide creators from any set
+Every set card in the Library Browser now has a **star** and an **eye** next to the uploader. The star follows them (their sets come first and are highlighted, as before), and now works for **ThePosterDB** creators too. The eye hides them: their sets drop out of every title's list, with a "N sets from hidden creators · Show" line to bring them back for that title. A creator is followed or hidden, never both, and the same name on MediUX and ThePosterDB counts as two different people. The **Creators** tab lists ThePosterDB follows, keeps hidden creators under a new **Hidden** heading where they can be unhidden, gains a **Hide** button in its header, and its follow box accepts a ThePosterDB profile link as well as a MediUX one.
+
+Thanks to @SteffenGivard for the ThePosterDB browsing and the follow and hide creator work.
+
 ## What's new in v2.9.2
 
 ### Applied art is recorded again in the web UI
@@ -139,7 +139,7 @@ The web and Docker API now rate limits requests per client, with a much smaller 
 
 ### Dependency updates
 Electron 44, Playwright 1.63, Fastify 5.12.5, React 19.3, Vite 8.3, and the rest of the toolchain are current, which clears every open security advisory.
-=======
+
 ## What's new in v2.3.0
 
 ### Collection posters apply correctly from the Collections tab
