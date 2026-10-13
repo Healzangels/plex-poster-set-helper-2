@@ -16,6 +16,9 @@ Thumbnails on ThePosterDB pages are also read from the page's real artwork inste
 ### Follow and hide creators from any set
 Every set card in the Library Browser now has a **star** and an **eye** next to the uploader. The star follows them (their sets come first and are highlighted, as before), and now works for **ThePosterDB** creators too. The eye hides them: their sets drop out of every title's list, with a "N sets from hidden creators · Show" line to bring them back for that title. A creator is followed or hidden, never both, and the same name on MediUX and ThePosterDB counts as two different people. The **Creators** tab lists ThePosterDB follows, keeps hidden creators under a new **Hidden** heading where they can be unhidden, gains a **Hide** button in its header, and its follow box accepts a ThePosterDB profile link as well as a MediUX one.
 
+### Dependency updates
+Playwright 1.64, framer-motion 14.1, ESLint 10.12, TanStack Query 5.104.2, lucide-react 1.56 and @fastify/rate-limit 11.2.1 are current. The remaining npm audit entries all sit in electron-builder's packaging chain (sprintf-js through @electron/get 3), have no patched release yet, and are not part of the shipped app.
+
 Thanks to @SteffenGivard for the ThePosterDB browsing and the follow and hide creator work.
 
 ## What's new in v2.9.2
