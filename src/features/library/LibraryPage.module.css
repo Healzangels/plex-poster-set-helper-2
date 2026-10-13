@@ -796,9 +796,6 @@
   cursor: pointer;
 }
 
-/* Multi-select filter chips - all three are on by default. No enclosing track,
-   so they sit cleanly on the panel instead of inside a dark inset box. A chip
-   is filled-gold when its type is shown and dimmed when it's hidden. */
 /* Which site's sets to show. Its own row above the uploader/type filters: it
    selects a different axis (where art came from, not what it is). */
 .sourceToggles {
@@ -849,6 +846,9 @@
   color: inherit;
 }
 
+/* Multi-select filter chips - all three are on by default. No enclosing track,
+   so they sit cleanly on the panel instead of inside a dark inset box. A chip
+   is filled-gold when its type is shown and dimmed when it's hidden. */
 .typeToggles {
   display: flex;
   flex-wrap: wrap;
@@ -891,7 +891,8 @@
   .filters { flex-direction: row; flex-wrap: wrap; align-items: center; }
   .sourceToggles { flex: 1 0 100%; }
   .sourceToggle { flex: 0 0 auto; }
-  /* The uploader dropdown - the element right after the source chips. */
+  /* The uploader dropdown: first in the row, or right after the source chips. */
+  .filters > :first-child:not(.sourceToggles),
   .filters > .sourceToggles + * { flex: 1 1 auto; min-width: 0; }
   .typeToggles { flex: 0 0 auto; flex-wrap: nowrap; }
   .typeToggle { flex: 0 0 auto; }
@@ -1743,8 +1744,9 @@
   flex-shrink: 0;
 }
 
-/* Uploader, source badge and follow/hide toggles together, with any
-   applied/match badge pushed to the right edge. */
+/* Uploader, source badge and follow/hide toggles together; the applied/match
+   badge sits at the right edge. The name gives way first, so a long username
+   truncates instead of pushing the badge and toggles out of the card. */
 .setUploaderRow {
   display: flex;
   align-items: center;
@@ -1752,10 +1754,9 @@
   min-width: 0;
 }
 
-.setUploaderRow > :last-child { margin-left: auto; }
-/* ...but the follow/hide toggles belong beside the name, not at the far edge
-   when the card has no trailing badge. */
-.setUploaderRow > .creatorActions:last-child { margin-left: 0; }
+.setUploaderRow > .uploaderLink { min-width: 0; flex: 0 1 auto; }
+.setUploaderRow > .uploaderLink .uploaderName { min-width: 0; }
+.setTrailing { margin-left: auto; flex-shrink: 0; display: inline-flex; }
 
 .setCardChecked {
   border-color: var(--color-accent);
@@ -2035,3 +2036,12 @@
 
 /* The Hidden rail list sits under Following and should not fight it for room. */
 .creatorListHidden { flex: 0 1 auto; max-height: 30%; }
+
+/* A ThePosterDB creator in the rail opens their site rather than a tab here. */
+.creatorExternal { color: var(--color-text-muted); flex-shrink: 0; }
+
+.addError {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--color-accent-error);
+}

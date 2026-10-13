@@ -41,7 +41,7 @@ describe('creator prefs', () =>
   it('does not duplicate a creator who is followed twice', () =>
   {
     const p = withCreatorState(withCreatorState(empty, 'mediux', 'Alice', 'followed'), 'mediux', 'alice', 'followed')
-    expect(p.mediuxFollows).toEqual(['alice'])
+    expect(p.mediuxFollows).toEqual(['Alice'])
   })
 
   it('round-trips through config, keeping the existing MediUX key', () =>

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo, createContext, useContext } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Search, X, Upload, Check, AlertCircle, Loader2, User, Image as ImageIcon, ChevronDown, ChevronUp, Plus, UserPlus, Trash2, CalendarClock, CheckCircle2, RefreshCw, Star, Library, Download, LayoutGrid, Users, Film, Tv, Layers, ArrowUp, ArrowDown, Eye, EyeOff } from 'lucide-react'
+import { Search, X, Upload, Check, AlertCircle, Loader2, User, Image as ImageIcon, ChevronDown, ChevronUp, Plus, UserPlus, Trash2, CalendarClock, CheckCircle2, RefreshCw, Star, Library, Download, LayoutGrid, Users, Film, Tv, Layers, ArrowUp, ArrowDown, Eye, EyeOff, ExternalLink } from 'lucide-react'
 import type { ScheduledJob } from '../../../electron/ipc/types'
 import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
@@ -10,13 +10,15 @@ import Spinner from '../../components/ui/Spinner'
 import Lightbox, { type LightboxImage } from '../../components/ui/Lightbox'
 import Pager from '../../components/ui/Pager'
 import PlexConnectBanner from '../../components/ui/PlexConnectBanner'
-import { groupPosters, posterFileType, setKey, ALL_TYPES, defaultSetApplyScope, type FileType, type SetApplyScope, type SetSource } from '../../utils/posterGroups'
-import { useCreatorPrefs, type CreatorState } from '../../utils/creatorPrefs'
+import { groupPosters, posterFileType, setKey, ALL_TYPES, SOURCE_LABEL, SOURCE_SHORT, defaultSetApplyScope, type FileType, type SetApplyScope, type SetSource } from '../../utils/posterGroups'
+import { useCreatorPrefs, parseCreatorInput, type CreatorState } from '../../utils/creatorPrefs'
+import { arrangeSets, uploaderValue } from '../../utils/librarySets'
 import { recordApplied, recordAppliedBatch, recordAppliedQuietly, appliedKey, loadAppliedIndex, type AppliedIndex } from '../../utils/appliedTracker'
 import { uuid } from '../../utils/uuid'
 import { errorMessage } from '../../utils/errorMessage'
 import {
   DEFAULT_QUICK_CRON, appliedUploaders, coveringJob, creatorSyncUrl, describeCron, describeQuickSync, planQuickSync, posterSlot, scheduleCoverage,
+  type AppliedUploader,
 } from '../../../electron/services/scheduleUtils'
 import { useAppContext } from '../../app/AppContext'
 import { useNavStore } from '../../app/navStore'
@@ -41,8 +43,8 @@ const ALL_SORTS: LibrarySort[] = ['recentlyAdded', 'title', 'year', 'lastPlayed'
 /** Sentinel activeKey for the movie-collections browser tab. */
 const COLLECTIONS_TAB_KEY = '__collections__'
 
-/** Grid art filter as the dropdown holds it; creators are prefixed so they share one list. */
-type ArtFilterValue = 'all' | 'none' | 'applied' | 'unscheduled' | `uploader:${string}`
+/** Grid art filter as the dropdown holds it; creators carry their site so the same name on two sites stays two entries. */
+type ArtFilterValue = 'all' | 'none' | 'applied' | 'unscheduled' | `uploader:${SetSource}:${string}`
 
 /**
  * Converts the dropdown value into the request filter.
@@ -53,7 +55,8 @@ type ArtFilterValue = 'all' | 'none' | 'applied' | 'unscheduled' | `uploader:${s
 function toArtFilter(value: ArtFilterValue): LibraryArtFilter | undefined {
   if (value === 'all') return undefined
   if (value === 'none' || value === 'applied' || value === 'unscheduled') return { kind: value }
-  return { kind: 'uploader', uploader: value.slice('uploader:'.length) }
+  const m = value.match(/^uploader:(mediux|posterdb):(.*)$/)
+  return m ? { kind: 'uploader', uploader: m[2], source: m[1] as SetSource } : undefined
 }
 
 interface BrowseCacheEntry {
@@ -61,7 +64,26 @@ interface BrowseCacheEntry {
   tmdbId?: string
   tmdbMissing?: boolean
   collectionMembers?: LibraryItem[]
+  sourceErrors?: Partial<Record<SetSource, string>>
+  /** ThePosterDB has more sets than were read; the page to continue on. */
+  posterdbUrl?: string
   fetchedAt: number
+}
+
+/** The sites the panel asks, in the order their sets are listed. */
+const SOURCES: SetSource[] = ['mediux', 'posterdb']
+
+/**
+ * A site's own failure to answer, as opposed to the panel-level notices
+ * (no TMDB id, no movies) that describe the title rather than the site.
+ *
+ * @param src - The site that was asked.
+ * @param res - Its answer.
+ * @returns The reason it could not be searched, if any.
+ */
+function sourceFailure(src: SetSource, res: BrowseSetsRes): string | undefined {
+  if (res.sourceErrors?.[src]) return res.sourceErrors[src]
+  return res.error && res.error !== 'no_tmdb' && res.error !== 'no_movies' ? res.error : undefined
 }
 const browseSetsCache = new Map<string, BrowseCacheEntry>()
 const BROWSE_CACHE_TTL = 30 * 60 * 1000
@@ -105,18 +127,6 @@ function invalidateCurrentArt(...keys: string[]) {
 function clampPanelWidth(w: number): number {
   const max = Math.min(PANEL_WIDTH_MAX, Math.round(window.innerWidth * 0.9))
   return Math.max(PANEL_WIDTH_MIN, Math.min(max, w))
-}
-
-/** Display names for the sites sets are browsed from. */
-const SOURCE_LABEL: Record<SetSource, string> = {
-  mediux: 'MediUX',
-  posterdb: 'ThePosterDB',
-}
-
-/** Compact form for the per-card badge; TPDb is ThePosterDB's own shorthand. */
-const SOURCE_SHORT: Record<SetSource, string> = {
-  mediux: 'MediUX',
-  posterdb: 'TPDb',
 }
 
 /** A creator's page on the site their set came from. */
@@ -227,7 +237,7 @@ function MyLibraryView({ targetSection, targetItem }: { targetSection: string | 
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [artFilter, setArtFilter] = useState<ArtFilterValue>('all')
   const [showStatus, setShowStatus] = useState<'any' | LibraryStatusFilter>('any')
-  const [uploaders, setUploaders] = useState<Array<{ uploader: string; count: number }>>([])
+  const [uploaders, setUploaders] = useState<AppliedUploader[]>([])
   const statusParam = showStatus === 'any' ? undefined : showStatus
 
   const offsetRef = useRef(0)
@@ -248,9 +258,10 @@ function MyLibraryView({ targetSection, targetItem }: { targetSection: string | 
     { value: 'applied', label: 'Art applied' },
     { value: 'unscheduled', label: 'Applied, not scheduled', description: 'No job keeps this art updated' },
     ...uploaders.map(u => ({
-      value: `uploader:${u.uploader}`,
-      label: `Applied from @${u.uploader}`,
-      description: `${u.count} title${u.count !== 1 ? 's' : ''}`,
+      value: `uploader:${u.source}:${u.uploader}`,
+      // The same name on both sites is two creators; say which one when it matters.
+      label: `Applied from @${u.uploader}${uploaders.some(o => o !== u && o.uploader.toLowerCase() === u.uploader.toLowerCase()) ? ` (${SOURCE_SHORT[u.source]})` : ''}`,
+      description: `${u.count} title${u.count !== 1 ? 's' : ''} · ${SOURCE_LABEL[u.source]}`,
     })),
   ]
 
@@ -699,11 +710,11 @@ export default function LibraryPage() {
       <div className={styles.page}>
         <div className={styles.header}>
           <div>
-            <h1 className="page-title">{mode === 'library' ? 'Library Browser' : 'MediUX Creators'}</h1>
+            <h1 className="page-title">{mode === 'library' ? 'Library Browser' : 'Creators'}</h1>
             <p className="page-subtitle">
               {mode === 'library'
                 ? 'Browse your Plex library and apply MediUX and ThePosterDB poster sets.'
-                : 'Follow MediUX creators and apply their newest art to your library.'}
+                : 'Follow creators on MediUX and ThePosterDB and apply their newest art to your library.'}
             </p>
           </div>
 
@@ -886,6 +897,13 @@ function SetsPanel({ item, onClose, onItemPoster }: {
   // Reveals hidden creators' sets for this title, until the next title.
   const [showHidden, setShowHidden] = useState(false)
   const { stateOf, setState: setCreatorState } = useCreatorPrefs()
+  // A site that was asked but could not answer, shown beside the other's sets.
+  const [sourceErrors, setSourceErrors] = useState<Partial<Record<SetSource, string>>>({})
+  // Sites still being searched once the first answer is in.
+  const [pending, setPending] = useState<Set<SetSource>>(new Set())
+  // ThePosterDB lists more sets than the panel read; the page to continue on.
+  const [posterdbMore, setPosterdbMore] = useState<string | null>(null)
+  const [creatorError, setCreatorError] = useState<string | null>(null)
   const [types, setTypes]       = useState<Set<FileType>>(new Set(ALL_TYPES))
   const [applyMap, setApplyMap] = useState<Record<string, ApplyState>>({})
   // Per-set apply scope: movies and collection poster are chosen independently.
@@ -1035,16 +1053,21 @@ function SetsPanel({ item, onClose, onItemPoster }: {
     const fresh = !!cached && Date.now() - cached.fetchedAt < BROWSE_CACHE_TTL
 
     setError(null)
+    setPending(new Set())
 
     if (cached) {
       setSets(cached.sets)
       setResolvedTmdbId(cached.tmdbId)
       setTmdbMissing(!!cached.tmdbMissing)
       setCollectionMembers(cached.collectionMembers ?? [])
+      setSourceErrors(cached.sourceErrors ?? {})
+      setPosterdbMore(cached.posterdbUrl ?? null)
       setLoading(false)
     } else {
       setSets([])
       setCollectionMembers([])
+      setSourceErrors({})
+      setPosterdbMore(null)
       setLoading(true)
     }
 
@@ -1052,45 +1075,70 @@ function SetsPanel({ item, onClose, onItemPoster }: {
 
     const hasCache = !!cached
     if (hasCache) setRefreshing(true)
+    setPending(new Set(SOURCES))
 
-    const load = isCollectionItem
-      ? window.api.library.collectionSets({ collectionKey: item.key, title: item.title })
+    // Each site is asked on its own, so MediUX's single page is not held back
+    // by the ThePosterDB walk; answers merge into the list as they arrive.
+    const request = (sources: SetSource[]): Promise<BrowseSetsRes> => isCollectionItem
+      ? window.api.library.collectionSets({ collectionKey: item.key, title: item.title, sources, fresh: forced })
       : window.api.library.sets({
           type: item.type === 'show' ? 'show' : 'movie',
           tmdbId: item.tmdbId, tvdbId: item.tvdbId, imdbId: item.imdbId, anidbId: item.anidbId,
           // ThePosterDB has no id lookup, so it matches on these.
           title: item.title, year: item.year,
+          sources, fresh: forced,
         })
 
-    load.then((res: BrowseSetsRes) => {
+    // Alphabetical by uploader; followed/hidden ordering is applied live in
+    // visibleSets, so it follows a follow or hide without a reload.
+    const byUploader = (a: PosterSetSummary, b: PosterSetSummary) => a.uploader.localeCompare(b.uploader)
+    const results: Partial<Record<SetSource, BrowseSetsRes>> = {}
+
+    const settle = (src: SetSource, res: BrowseSetsRes) => {
       if (cancelled) return
-      if (res.error === 'no_tmdb') setError('no_tmdb')
-      else if (res.error === 'no_movies') setError('no_movies')
-      else if (res.error) setError(res.error)
-      setResolvedTmdbId(res.tmdbId)
-      setTmdbMissing(!!res.tmdbMissing)
-      // Alphabetical by uploader; followed/hidden ordering is applied live in
-      // visibleSets, so it follows a follow or hide without a reload.
-      const sorted = [...res.sets].sort((a, b) => a.uploader.localeCompare(b.uploader))
-      browseSetsCache.set(key, {
-        sets: sorted,
-        tmdbId: res.tmdbId,
-        tmdbMissing: res.tmdbMissing,
-        collectionMembers: res.collectionMembers,
-        fetchedAt: Date.now(),
-      })
-      setSets(sorted)
-      setCollectionMembers(res.collectionMembers ?? [])
-    }).catch((e: unknown) => {
-      if (!cancelled && !hasCache) setError(e instanceof Error ? e.message : String(e))
-    }).finally(() => {
-      if (!cancelled) {
-        setLoading(false)
-        setRefreshing(false)
+      results[src] = res
+      setSourceErrors(prev => ({ ...prev, [src]: sourceFailure(src, res) }))
+      setSets(prev => [...prev.filter(s => s.source !== src), ...res.sets].sort(byUploader))
+      if (res.collectionMembers) setCollectionMembers(res.collectionMembers)
+      if (src === 'mediux') {
+        setResolvedTmdbId(res.tmdbId)
+        setTmdbMissing(!!res.tmdbMissing)
+      } else {
+        setPosterdbMore(res.posterdbCapped && res.posterdbUrl ? res.posterdbUrl : null)
       }
+      if (res.error === 'no_movies') setError('no_movies')
+      setPending(prev => { const next = new Set(prev); next.delete(src); return next })
+      setLoading(false)
+    }
+
+    Promise.all(SOURCES.map(src =>
+      request([src]).then(res => settle(src, res), (e: unknown) => settle(src, { sets: [], error: errorMessage(e) })),
+    )).then(() => {
+      if (cancelled) return
+      const m = results.mediux, p = results.posterdb
+      const failures: Partial<Record<SetSource, string>> = {}
+      for (const src of SOURCES) {
+        const f = results[src] && sourceFailure(src, results[src])
+        if (f) failures[src] = f
+      }
+      // "No TMDB id" blocks the panel only when ThePosterDB had nothing to add.
+      if (m?.tmdbMissing && !p?.sets.length && !failures.posterdb && !m.error) setError('no_tmdb')
+      // A site that failed is retried on the next open rather than remembered.
+      if (!Object.keys(failures).length) {
+        browseSetsCache.set(key, {
+          sets: [...(m?.sets ?? []), ...(p?.sets ?? [])].sort(byUploader),
+          tmdbId: m?.tmdbId,
+          tmdbMissing: m?.tmdbMissing,
+          collectionMembers: m?.collectionMembers ?? p?.collectionMembers,
+          posterdbUrl: p?.posterdbCapped && p.posterdbUrl ? p.posterdbUrl : undefined,
+          fetchedAt: Date.now(),
+        })
+      }
+      setLoading(false)
+      setRefreshing(false)
     })
     return () => { cancelled = true }
-  }, [item.key, item.type, item.title, item.tmdbId, item.tvdbId, item.imdbId, item.anidbId, isCollectionItem, setsReloadKey])
+  }, [item.key, item.type, item.title, item.year, item.tmdbId, item.tvdbId, item.imdbId, item.anidbId, isCollectionItem, setsReloadKey])
 
   function refreshSets() {
     browseSetsCache.delete(browseCacheKey(item))
@@ -1178,57 +1226,15 @@ function SetsPanel({ item, onClose, onItemPoster }: {
     return () => { cancelled = true }
   }, [sets, item.tmdbId, resolvedTmdbId, isCollectionItem, collectionMembers])
 
-  // How many sets each site contributed, for the source chips. Chips for a site
-  // that returned nothing are still shown (with a 0) so the absence is legible -
-  // "MediUX has no sets for this" is useful information, not noise.
-  const sourceCounts = useMemo(() => {
-    const counts: Record<SetSource, number> = { mediux: 0, posterdb: 0 }
-    for (const s of sets) counts[s.source]++
-    return counts
-  }, [sets])
-
-  // The uploader list follows the source filter, so picking ThePosterDB doesn't
-  // leave MediUX-only creators in the dropdown.
-  const sourceSets = useMemo(
-    () => source === 'all' ? sets : sets.filter(s => s.source === source),
-    [sets, source],
-  )
-
   const creatorOf = useCallback((s: PosterSetSummary) => stateOf(s.source, s.uploader), [stateOf])
 
-  const uploaders = useMemo(() => {
-    // Followed uploaders first, then the rest alphabetically. Hidden ones are
-    // left out unless revealed - picking one would show a list of nothing.
-    const rank = new Map<string, number>()
-    for (const s of sourceSets) {
-      const st = creatorOf(s)
-      if (st === 'hidden' && !showHidden) continue
-      const r = st === 'followed' ? 0 : st === 'hidden' ? 2 : 1
-      rank.set(s.uploader, Math.min(rank.get(s.uploader) ?? r, r))
-    }
-    const all = [...rank.keys()].sort((a, b) => rank.get(a)! - rank.get(b)! || a.localeCompare(b))
-    return ['all', ...all]
-  }, [sourceSets, creatorOf, showHidden])
-
-  // An uploader picked before switching source may not exist in the new one.
-  // Derived rather than reset in an effect, so the stale value falls back to
-  // "all" in the same render instead of flashing an empty list first.
-  const activeUploader = uploader !== 'all' && !uploaders.includes(uploader) ? 'all' : uploader
-
-  const { visibleSets, hiddenCount } = useMemo(
-    () => {
-      const byUploader = activeUploader === 'all' ? sourceSets : sourceSets.filter(s => s.uploader === activeUploader)
-      // Hide sets that have nothing to apply under the current type filter, so
-      // the chips actually narrow the result list instead of only dimming art.
-      const matching = byUploader.filter(s => s.posters.some(p => types.has(posterFileType(p))))
-      const hiddenCount = matching.filter(s => creatorOf(s) === 'hidden').length
-      const rank = (s: PosterSetSummary) => { const st = creatorOf(s); return st === 'followed' ? 0 : st === 'hidden' ? 2 : 1 }
-      const shown = showHidden ? matching : matching.filter(s => creatorOf(s) !== 'hidden')
-      // Stable sort: followed first, revealed hidden sets last, otherwise the
-      // order the sets arrived in.
-      return { visibleSets: [...shown].sort((a, b) => rank(a) - rank(b)), hiddenCount }
-    },
-    [sourceSets, activeUploader, types, creatorOf, showHidden],
+  // Filters and creator preferences are applied in one tested helper, so the
+  // dropdown, the list and the hidden count always agree. A stale choice (an
+  // uploader hidden since, a site that returned nothing) falls back to "all"
+  // in the same render instead of flashing an empty list first.
+  const { sourceCounts, activeSource, sourceSets, uploaders, activeUploader, visibleSets, hiddenCount } = useMemo(
+    () => arrangeSets(sets, { source, uploader, types, showHidden, stateOf }),
+    [sets, source, uploader, types, showHidden, stateOf],
   )
 
   function toggleType(t: FileType) {
@@ -1511,34 +1517,39 @@ function SetsPanel({ item, onClose, onItemPoster }: {
       {/* Filters */}
       {!loading && !error && sets.length > 0 && (
         <div className={styles.filters}>
-          <div className={styles.sourceToggles}>
-            <button
-              className={`${styles.sourceToggle} ${source === 'all' ? styles.sourceToggleOn : ''}`}
-              onClick={() => setSource('all')}
-            >
-              Both <span className={styles.sourceCount}>{sets.length}</span>
-            </button>
-            {(['mediux', 'posterdb'] as SetSource[]).map(src => (
+          {/* Only worth a row when both sites answered; the card badges and
+              the notices cover a single-site list. */}
+          {sourceCounts.mediux > 0 && sourceCounts.posterdb > 0 && (
+            <div className={styles.sourceToggles} role="group" aria-label="Source">
               <button
-                key={src}
-                className={`${styles.sourceToggle} ${source === src ? styles.sourceToggleOn : ''}`}
-                onClick={() => setSource(src)}
-                disabled={sourceCounts[src] === 0}
-                title={sourceCounts[src] === 0 ? `No ${SOURCE_LABEL[src]} sets for this title` : `Show only ${SOURCE_LABEL[src]} sets`}
+                className={`${styles.sourceToggle} ${activeSource === 'all' ? styles.sourceToggleOn : ''}`}
+                onClick={() => setSource('all')}
+                aria-pressed={activeSource === 'all'}
+                title="Show sets from both sites"
               >
-                {SOURCE_LABEL[src]} <span className={styles.sourceCount}>{sourceCounts[src]}</span>
+                All <span className={styles.sourceCount}>{sets.length}</span>
               </button>
-            ))}
-          </div>
+              {SOURCES.map(src => (
+                <button
+                  key={src}
+                  className={`${styles.sourceToggle} ${activeSource === src ? styles.sourceToggleOn : ''}`}
+                  onClick={() => setSource(src)}
+                  aria-pressed={activeSource === src}
+                  title={`Show only ${SOURCE_LABEL[src]} sets`}
+                >
+                  {SOURCE_LABEL[src]} <span className={styles.sourceCount}>{sourceCounts[src]}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <Select
             value={activeUploader}
             onChange={setUploader}
-            searchable={uploaders.length > 6}
-            options={uploaders.map(u => ({
-              value: u,
-              label: u === 'all' ? `All uploaders (${sourceSets.length})` : u,
-              icon: u === 'all' ? <User size={13} /> : undefined,
-            }))}
+            searchable={uploaders.length > 5}
+            options={[
+              { value: 'all', label: `All uploaders (${sourceSets.length})`, icon: <User size={13} /> },
+              ...uploaders.map(u => ({ value: u.value, label: u.label })),
+            ]}
           />
           <div className={styles.typeToggles}>
             {ALL_TYPES.map(t => (
@@ -1566,6 +1577,29 @@ function SetsPanel({ item, onClose, onItemPoster }: {
           transition={{ duration: 0.18 }}
         >
         {loading && <div className={styles.panelLoading}><Spinner size="sm" /> <span>{isCollectionItem ? 'Finding collection sets on MediUX and ThePosterDB…' : 'Finding sets on MediUX and ThePosterDB…'}</span></div>}
+
+        {!loading && pending.size > 0 && (
+          <div className={styles.panelInlineNotice}>
+            <Loader2 size={13} className={styles.spin} />
+            <span>Still searching {[...pending].map(s => SOURCE_LABEL[s]).join(' and ')}…</span>
+          </div>
+        )}
+
+        {creatorError && (
+          <div className={styles.panelInlineNotice}>
+            <AlertCircle size={13} />
+            <span>Could not save that creator preference: {creatorError}</span>
+          </div>
+        )}
+
+        {/* A site that could not be searched is a note beside the other site's
+            sets, never a reason to hide them. */}
+        {!loading && SOURCES.filter(s => sourceErrors[s]).map(s => (
+          <div key={s} className={styles.panelInlineNotice}>
+            <AlertCircle size={13} />
+            <span>{SOURCE_LABEL[s]} could not be searched: {sourceErrors[s]}</span>
+          </div>
+        ))}
 
         {error === 'no_movies' && (
           <div className={styles.panelNotice}>
@@ -1612,20 +1646,41 @@ function SetsPanel({ item, onClose, onItemPoster }: {
         )}
 
         {/* Sets came back from ThePosterDB (title match) but MediUX was skipped
-            for want of a TMDB id - worth saying, not worth hiding results for. */}
+            for want of a TMDB id - worth saying, not worth hiding results for.
+            A key only converts TVDB/IMDb ids, so it is suggested only then. */}
         {!loading && !error && tmdbMissing && sets.length > 0 && (
           <div className={styles.panelInlineNotice}>
             <AlertCircle size={13} />
             <span>
-              ThePosterDB sets only - this item has no TMDB id, so MediUX could not be searched.
-              {!hasTmdbKey && ' Add a TMDB API key in Settings to include it.'}
+              ThePosterDB sets only: this item has no TMDB id, so MediUX could not be searched.
+              {!hasTmdbKey && (item.tvdbId || item.imdbId) && ' Add a TMDB API key in Settings to include it.'}
             </span>
           </div>
         )}
 
-        {!loading && !error && sets.length === 0 && (
-          <div className={styles.panelNotice}><ImageIcon size={20} /><p>No sets found for this title on MediUX or ThePosterDB.</p></div>
+        {!loading && !error && posterdbMore && (
+          <div className={styles.panelInlineNotice}>
+            <ImageIcon size={13} />
+            <span>
+              ThePosterDB lists more sets for this title than are shown here.{' '}
+              <button className={styles.noteSearchLink} onClick={() => window.api.app.openExternal(posterdbMore)}>Open on ThePosterDB</button>
+            </span>
+          </div>
         )}
+
+        {!loading && !error && pending.size === 0 && sets.length === 0 && (() => {
+          const searched = SOURCES.filter(s => !sourceErrors[s])
+          return (
+            <div className={styles.panelNotice}>
+              <ImageIcon size={20} />
+              <p>
+                {searched.length === 0
+                  ? 'Neither site could be searched for this title.'
+                  : `No sets found for this title on ${searched.map(s => SOURCE_LABEL[s]).join(' or ')}.`}
+              </p>
+            </div>
+          )
+        })()}
 
         {!loading && !error && sets.length > 0 && visibleSets.length === 0 && hiddenCount === 0 && (
           <div className={styles.panelNotice}><ImageIcon size={20} /><p>No sets match the current filters.</p></div>
@@ -1668,7 +1723,14 @@ function SetsPanel({ item, onClose, onItemPoster }: {
               onApply={() => applySet(s)}
               enabledTypes={types}
               creator={creatorOf(s)}
-              onCreatorChange={state => { void setCreatorState(s.source, s.uploader, state) }}
+              onCreatorChange={state => {
+                // Hiding the creator the dropdown is narrowed to would leave
+                // an empty list, and the stale choice would resurface on Show.
+                if (state === 'hidden' && uploaderValue(s) === uploader) setUploader('all')
+                setCreatorError(null)
+                setCreatorState(s.source, s.uploader, state).catch((err: unknown) => setCreatorError(errorMessage(err)))
+              }}
+              showSource
               badge={badge}
               onSchedule={() => scheduleSet(s)}
               scheduledBy={scheduledBy ? `${scheduledBy.name} · ${describeCron(scheduledBy.cronExpr)}` : undefined}
@@ -1698,7 +1760,7 @@ function SetsPanel({ item, onClose, onItemPoster }: {
           <button className={styles.hiddenToggle} onClick={() => setShowHidden(v => !v)}>
             {showHidden ? <EyeOff size={13} /> : <Eye size={13} />}
             {showHidden
-              ? `Hide ${hiddenCount} set${hiddenCount !== 1 ? 's' : ''} from hidden creators`
+              ? `Showing ${hiddenCount} set${hiddenCount !== 1 ? 's' : ''} from hidden creators · Hide`
               : `${hiddenCount} set${hiddenCount !== 1 ? 's' : ''} from hidden creators · Show`}
           </button>
         )}
@@ -1731,7 +1793,7 @@ function ThumbButton({ url, label, episode, onClick }: { url: string; label: str
 }
 
 /** Expandable card for one poster set: preview, uploader, source, counts, apply state, and grouped posters. */
-function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, creator = 'none', onCreatorChange, selectable, checked, onToggleSelect, onSchedule, scheduledBy, onOpenSchedule, scheduleHint, scheduleError, scheduling, collectionMovies, collectionTotal, hasCollectionArt, applyScope, scopeContext, onApplyScopeChange }: {
+function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, creator = 'none', onCreatorChange, showSource, selectable, checked, onToggleSelect, onSchedule, scheduledBy, onOpenSchedule, scheduleHint, scheduleError, scheduling, collectionMovies, collectionTotal, hasCollectionArt, applyScope, scopeContext, onApplyScopeChange }: {
   set: PosterSetSummary
   apply?: ApplyState
   onApply: () => void
@@ -1746,6 +1808,8 @@ function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, cr
   creator?: CreatorState
   /** Follow, hide or reset the uploader; omit to show no creator controls. */
   onCreatorChange?: (state: CreatorState) => void
+  /** Tag the card with its site; for lists that mix MediUX and ThePosterDB. */
+  showSource?: boolean
   /** Shows a selection checkbox (Creators sync). */
   selectable?: boolean
   checked?: boolean
@@ -1776,8 +1840,9 @@ function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, cr
 }) {
   const [err, setErr]               = useState(false)
   const [previewLoaded, setPreviewLoaded] = useState(false)
-  // ThePosterDB avatars are guessed from the username; users without one 403.
-  const [avatarFailed, setAvatarFailed] = useState(false)
+  // A ThePosterDB avatar can be the fallback CDN guess, which 403s for users
+  // without an upload. Remembered per URL, so a refreshed avatar gets a new try.
+  const [failedAvatar, setFailedAvatar] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
   const status = apply?.status ?? 'idle'
   const openCreator = useContext(CreatorNav)
@@ -1845,21 +1910,24 @@ function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, cr
                 : openCreator(set.uploader)}
               title={isPosterdb ? `Open ${set.uploader} on ThePosterDB` : `View ${set.uploader} in Creators`}
             >
-              {set.uploaderAvatar && !avatarFailed ? (
-                <img className={styles.avatar} src={set.uploaderAvatar} alt={set.uploader} onError={() => setAvatarFailed(true)} />
+              {set.uploaderAvatar && failedAvatar !== set.uploaderAvatar ? (
+                <img className={styles.avatar} src={set.uploaderAvatar} alt={set.uploader} onError={() => setFailedAvatar(set.uploaderAvatar ?? null)} />
               ) : (
                 <div className={styles.avatarFallback}><User size={11} /></div>
               )}
               <span className={styles.uploaderName}>{set.uploader}</span>
               {creator === 'followed' && !onCreatorChange && <Star size={10} className={styles.followStar} />}
             </button>
-            <Badge variant={set.source}>{SOURCE_SHORT[set.source]}</Badge>
+            {showSource && <Badge variant={set.source}>{SOURCE_SHORT[set.source]}</Badge>}
             {onCreatorChange && (
+              // Both toggles depict state, like the star: lit when on. The
+              // accessible name stays constant and aria-pressed carries the state.
               <div className={styles.creatorActions}>
                 <button
                   className={`${styles.creatorAction} ${creator === 'followed' ? styles.creatorActionOn : ''}`}
                   onClick={() => onCreatorChange(creator === 'followed' ? 'none' : 'followed')}
-                  title={creator === 'followed' ? `Unfollow ${set.uploader}` : `Follow ${set.uploader} - their sets come first and are highlighted`}
+                  title={creator === 'followed' ? `Unfollow ${set.uploader}` : `Follow ${set.uploader}: their sets come first and are highlighted`}
+                  aria-label={`Follow ${set.uploader}`}
                   aria-pressed={creator === 'followed'}
                 >
                   <Star size={12} fill={creator === 'followed' ? 'currentColor' : 'none'} />
@@ -1868,13 +1936,14 @@ function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, cr
                   className={`${styles.creatorAction} ${creator === 'hidden' ? styles.creatorActionOn : ''}`}
                   onClick={() => onCreatorChange(creator === 'hidden' ? 'none' : 'hidden')}
                   title={creator === 'hidden' ? `Unhide ${set.uploader}` : `Hide ${set.uploader}'s sets`}
+                  aria-label={`Hide ${set.uploader}`}
                   aria-pressed={creator === 'hidden'}
                 >
-                  {creator === 'hidden' ? <Eye size={12} /> : <EyeOff size={12} />}
+                  {creator === 'hidden' ? <EyeOff size={12} /> : <Eye size={12} />}
                 </button>
               </div>
             )}
-            {!title && badge}
+            {!title && badge && <span className={styles.setTrailing}>{badge}</span>}
           </div>
 
           <div className={styles.setCounts}>
@@ -2101,18 +2170,6 @@ function FileTile({ poster, set, st, done, error, onLightbox, onApply }: {
   )
 }
 
-/**
- * Normalises creator input.
- *
- * @param input - A full profile URL or a bare username.
- * @returns The bare username, with any leading @ stripped.
- */
-function normalizeUsername(input: string): string {
-  const t = input.trim()
-  const m = t.match(/mediux\.pro\/user\/([^/?#]+)/i)
-  return (m ? m[1] : t).replace(/^@/, '').trim()
-}
-
 /** Creators view: followed and hidden creator rails plus the selected creator's sets. */
 function CreatorsView({ initialCreator }: { initialCreator: string | null }) {
   const { prefs, stateOf, setState } = useCreatorPrefs()
@@ -2123,6 +2180,7 @@ function CreatorsView({ initialCreator }: { initialCreator: string | null }) {
   const [picked, setActive]   = useState<string | null>(null)
   const active = picked ?? subs[0] ?? null
   const [adding, setAdding]   = useState('')
+  const [prefsError, setPrefsError] = useState<string | null>(null)
 
   useEffect(() => { loadAppliedIndex().then(setAppliedIdx) }, [])
 
@@ -2135,17 +2193,35 @@ function CreatorsView({ initialCreator }: { initialCreator: string | null }) {
   // their own site instead.
   const openTpdb = (name: string) => window.api.app.openExternal(creatorUrl('posterdb', name))
 
+  const savePrefs = (run: Promise<unknown>) => {
+    setPrefsError(null)
+    run.catch((err: unknown) => setPrefsError(errorMessage(err)))
+  }
+
   async function addCreator() {
-    const name = normalizeUsername(adding)
-    if (!name) return
-    if (stateOf('mediux', name) !== 'followed') await setState('mediux', name, 'followed')
-    setActive(name)
-    setAdding('')
+    const parsed = parseCreatorInput(adding)
+    if (!parsed) {
+      setPrefsError('Enter a username or a MediUX / ThePosterDB profile link.')
+      return
+    }
+    setPrefsError(null)
+    try {
+      if (stateOf(parsed.source, parsed.name) !== 'followed') await setState(parsed.source, parsed.name, 'followed')
+      if (parsed.source === 'mediux') setActive(parsed.name)
+      setAdding('')
+    } catch (err) {
+      setPrefsError(errorMessage(err))
+    }
   }
 
   async function removeCreator(name: string) {
-    const next = await setState('mediux', name, 'none')
-    if (active?.toLowerCase() === name.toLowerCase()) setActive(next.mediuxFollows[0] ?? null)
+    try {
+      setPrefsError(null)
+      const next = await setState('mediux', name, 'none')
+      if (active?.toLowerCase() === name.toLowerCase()) setActive(next.mediuxFollows[0] ?? null)
+    } catch (err) {
+      setPrefsError(errorMessage(err))
+    }
   }
 
   const isActive = (name: string) => active?.toLowerCase() === name.toLowerCase()
@@ -2180,8 +2256,9 @@ function CreatorsView({ initialCreator }: { initialCreator: string | null }) {
             >
               <Star size={12} className={styles.creatorStar} />
               <span className={styles.creatorName}>{name}</span>
-              <Badge variant="posterdb">TPDb</Badge>
-              <button className={styles.creatorRemove} onClick={e => { e.stopPropagation(); void setState('posterdb', name, 'none') }} title="Unfollow">
+              <Badge variant="posterdb">{SOURCE_SHORT.posterdb}</Badge>
+              <ExternalLink size={11} className={styles.creatorExternal} aria-hidden />
+              <button className={styles.creatorRemove} onClick={e => { e.stopPropagation(); savePrefs(setState('posterdb', name, 'none')) }} title="Unfollow">
                 <Trash2 size={12} />
               </button>
             </div>
@@ -2202,9 +2279,10 @@ function CreatorsView({ initialCreator }: { initialCreator: string | null }) {
                   <EyeOff size={12} className={styles.creatorStar} />
                   <span className={styles.creatorName}>{h.username}</span>
                   <Badge variant={h.source}>{SOURCE_SHORT[h.source]}</Badge>
+                  {h.source === 'posterdb' && <ExternalLink size={11} className={styles.creatorExternal} aria-hidden />}
                   <button
                     className={styles.creatorRemove}
-                    onClick={e => { e.stopPropagation(); void setState(h.source, h.username, 'none') }}
+                    onClick={e => { e.stopPropagation(); savePrefs(setState(h.source, h.username, 'none')) }}
                     title="Unhide"
                   >
                     <Eye size={12} />
@@ -2221,7 +2299,7 @@ function CreatorsView({ initialCreator }: { initialCreator: string | null }) {
             <UserPlus size={14} className={styles.addIcon} />
             <input
               className={styles.addInput}
-              placeholder="username or mediux.pro/user/…"
+              placeholder="username or profile link"
               value={adding}
               onChange={e => setAdding(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') addCreator() }}
@@ -2231,6 +2309,7 @@ function CreatorsView({ initialCreator }: { initialCreator: string | null }) {
               <Plus size={14} />
             </button>
           </div>
+          {prefsError && <p className={styles.addError}>{prefsError}</p>}
         </div>
       </div>
 
@@ -2242,7 +2321,12 @@ function CreatorsView({ initialCreator }: { initialCreator: string | null }) {
             username={active}
             creator={activeState}
             appliedIdx={appliedIdx}
-            onCreatorChange={state => { void setState('mediux', active, state) }}
+            onCreatorChange={state => {
+              // Pin the selection first: once the creator leaves the followed
+              // list, the fallback would move the view to someone else.
+              setActive(active)
+              savePrefs(setState('mediux', active, state))
+            }}
             onApplied={(sKey, itemKey, title, year, urls) => setAppliedIdx(prev => ({
               setKeys: new Set(prev.setKeys).add(sKey),
               titles: new Set(prev.titles).add(appliedKey(title, year)),
@@ -2254,8 +2338,8 @@ function CreatorsView({ initialCreator }: { initialCreator: string | null }) {
         ) : (
           <div className={styles.creatorEmpty}>
             <UserPlus size={32} />
-            <p>Follow a MediUX creator to browse their newest art.</p>
-            <p className={styles.creatorEmptySub}>e.g. <code>aloha_alona</code> or a profile URL</p>
+            <p>Follow a creator to browse their newest art.</p>
+            <p className={styles.creatorEmptySub}>e.g. <code>aloha_alona</code> or a profile link. MediUX creators are browsed here; ThePosterDB creators open on their site.</p>
           </div>
         )}
       </div>

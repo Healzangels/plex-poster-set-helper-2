@@ -1,11 +1,22 @@
-import type { PosterInfo } from '../../electron/ipc/types'
+import type { PosterInfo, SetSource } from '../../electron/ipc/types'
 import { posterKind } from '../../electron/services/scheduleUtils'
 
 export type FileType = 'poster' | 'backdrop' | 'title_card'
 export const ALL_TYPES: FileType[] = ['poster', 'backdrop', 'title_card']
 
-/** Where a poster set came from. */
-export type SetSource = 'mediux' | 'posterdb'
+export type { SetSource }
+
+/** Display names for the sites sets come from. */
+export const SOURCE_LABEL: Record<SetSource, string> = {
+  mediux: 'MediUX',
+  posterdb: 'ThePosterDB',
+}
+
+/** Compact form for badges; TPDb is ThePosterDB's own shorthand. */
+export const SOURCE_SHORT: Record<SetSource, string> = {
+  mediux: 'MediUX',
+  posterdb: 'TPDb',
+}
 
 /**
  * Source-qualified identity for a poster set. MediUX and ThePosterDB both

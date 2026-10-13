@@ -15,6 +15,7 @@ import Pager from '../../components/ui/Pager'
 import PlexConnectBanner from '../../components/ui/PlexConnectBanner'
 import { useAppContext } from '../../app/AppContext'
 import { useReset, type ResetItemStatus } from './ResetContext'
+import { SOURCE_LABEL, SOURCE_SHORT } from '../../utils/posterGroups'
 import type { AppliedRecord } from '../../../electron/ipc/types'
 import styles from './ResetPage.module.css'
 
@@ -218,7 +219,7 @@ export default function ResetPage() {
   const lightboxImages: LightboxImage[] = filtered.map(i => ({
     url: enlarge(i.thumb) ?? i.thumb ?? '',
     label: i.year ? `${i.title} (${i.year})` : i.title,
-    caption: `${i.source === 'mediux' ? 'MediUX' : 'ThePosterDB'} · ${i.libraryTitle ?? ''}`.trim(),
+    caption: `${SOURCE_LABEL[i.source]} · ${i.libraryTitle ?? ''}`.trim(),
   }))
 
   const cleanBusy = cleanState === 'cleaning'
@@ -335,7 +336,7 @@ export default function ResetPage() {
                 className={`${styles.filterBtn} ${sourceFilter === f ? styles.filterActive : ''}`}
                 onClick={() => { setSource(f); setPage(0) }}
               >
-                {f === 'all' ? 'All Sources' : f === 'mediux' ? 'MediUX' : 'PosterDB'}
+                {f === 'all' ? 'All Sources' : SOURCE_LABEL[f]}
               </button>
             ))}
           </div>
@@ -420,7 +421,7 @@ export default function ResetPage() {
                   <span className={styles.itemTitle}>{item.title}</span>
                   <div className={styles.itemMeta}>
                     {item.year && <span className={styles.itemYear}>{item.year}</span>}
-                    <Badge variant={item.source}>{item.source === 'mediux' ? 'MediUX' : 'PosterDB'}</Badge>
+                    <Badge variant={item.source}>{SOURCE_SHORT[item.source]}</Badge>
                     <Badge variant={item.type === 'movie' ? 'movie' : 'show'}>
                       {item.type === 'movie' ? 'Movie' : item.type === 'collection' ? 'Collection' : 'Show'}
                     </Badge>

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { posterFileType, groupPosters, ALL_TYPES } from './posterGroups'
+import { posterFileType, groupPosters, setKey, ALL_TYPES } from './posterGroups'
 import type { PosterInfo } from '../../electron/ipc/types'
 
 function p(overrides: Partial<PosterInfo> = {}): PosterInfo {
@@ -103,5 +103,13 @@ describe('groupPosters', () => {
 
   it('returns empty array for no posters', () => {
     expect(groupPosters([])).toEqual([])
+  })
+})
+
+describe('setKey', () => {
+  it('qualifies a set id with its site', () => {
+    expect(setKey({ id: '42', source: 'mediux' })).toBe('mediux:42')
+    expect(setKey({ id: '42', source: 'posterdb' })).not.toBe(setKey({ id: '42', source: 'mediux' }))
+    expect(setKey({ source: 'mediux' })).toBe('mediux:')
   })
 })

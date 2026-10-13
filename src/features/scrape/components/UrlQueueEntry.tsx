@@ -8,9 +8,9 @@ import Badge from '../../../components/ui/Badge'
 import Spinner from '../../../components/ui/Spinner'
 import Button from '../../../components/ui/Button'
 import Lightbox, { type LightboxImage } from '../../../components/ui/Lightbox'
-import { groupPosters } from '../../../utils/posterGroups'
+import { groupPosters, SOURCE_SHORT } from '../../../utils/posterGroups'
 import { recordAppliedQuietly, appliedKey, loadAppliedIndex, type AppliedIndex } from '../../../utils/appliedTracker'
-import { posterSlot } from '../../../../electron/services/scheduleUtils'
+import { posterSlot, setRefOfUrl } from '../../../../electron/services/scheduleUtils'
 import { useScrapeStore } from '../useScrapeStore'
 import type { QueueEntry, PosterResult } from '../useScrapeStore'
 import styles from './UrlQueueEntry.module.css'
@@ -27,7 +27,7 @@ interface Props {
  * Detects the scraping source site from a URL.
  *
  * @param url - URL to inspect.
- * @returns posterdb, mediux, or null when unrecognised.
+ * @returns posterdb, mediux, or null when unrecognized.
  */
 function sourceFromUrl(url: string): 'posterdb' | 'mediux' | null {
   if (/theposterdb\.com/i.test(url)) return 'posterdb'
@@ -284,9 +284,9 @@ export default function UrlQueueEntry({ entry, isRunning, patchPoster }: Props) 
 
   const doneCount = entry.posters.filter(p => p.uploadStatus === 'done').length
 
-  // Set id for this entry - recorded on upload so the Library Browser
-  // recognises it. MediUX sets live at /sets/{id}, ThePosterDB's at /set/{id}.
-  const entrySetId = (entry.url.match(/\/sets\/(\d+)/) ?? entry.url.match(/\/set\/(\d+)/))?.[1]
+  // Set id for this entry, recorded on upload so the Library Browser
+  // recognizes it; the scheduler reads it from the same helper.
+  const entrySetId = setRefOfUrl(entry.url)?.id
 
   // Reloads when expanded and whenever an upload completes so it stays live.
   useEffect(() => {
@@ -361,7 +361,7 @@ export default function UrlQueueEntry({ entry, isRunning, patchPoster }: Props) 
 
         {/* source badge */}
         <Badge variant={source} className={styles.sourceBadge}>
-          {source === 'posterdb' ? 'PDB' : 'MX'}
+          {SOURCE_SHORT[source]}
         </Badge>
 
         {/* URL */}
