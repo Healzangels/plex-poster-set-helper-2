@@ -1,5 +1,5 @@
 import pLimit from 'p-limit'
-import { PosterdbScraper, posterdbUrlType, type PosterdbMediaType } from './posterdbScraper'
+import { PosterdbScraper, posterdbUrlType, type PosterdbBrowseResult, type PosterdbMediaType } from './posterdbScraper'
 import { MediuxScraper } from './mediuxScraper'
 import { BaseScraper } from './baseScraper'
 import { Logger } from '../services/logger'
@@ -13,6 +13,11 @@ export { classifyUrl, type ScraperSource }
 let _posterdb: PosterdbScraper | null = null
 let _mediux: MediuxScraper | null = null
 let _aborted = false
+
+// The library browser gets its own ThePosterDB instance: a scrape session's
+// abort() and close() must not cut off or orphan a browse in progress.
+let _browsePosterdb: PosterdbScraper | null = null
+let _browsesInFlight = 0
 
 function getPosterdb(): PosterdbScraper {
   if (!_posterdb) _posterdb = new PosterdbScraper()
@@ -139,14 +144,28 @@ export const ScraperFactory = {
    * @param title - Plex title.
    * @param year - Release year, when known.
    * @param type - Movie, show, or collection.
-   * @returns Set summaries, or an empty list on failure (never throws).
+   * @param fresh - Skip remembered title matches.
+   * @returns The sets found, or an empty result carrying the reason (never throws).
    */
-  async browsePosterdb(title: string, year: number | undefined, type: PosterdbMediaType) {
+  async browsePosterdb(
+    title: string,
+    year: number | undefined,
+    type: PosterdbMediaType,
+    fresh = false,
+  ): Promise<PosterdbBrowseResult & { error?: string }> {
+    const scraper = (_browsePosterdb ??= new PosterdbScraper())
+    _browsesInFlight++
     try {
-      return await getPosterdb().browseSets(title, year, type)
+      return await scraper.browseSets(title, year, type, fresh)
     } catch (err) {
-      Logger.warn('ScraperFactory', `browsePosterdb failed for "${title}": ${err instanceof Error ? err.message : err}`)
-      return []
+      const error = err instanceof Error ? err.message : String(err)
+      Logger.warn('ScraperFactory', `browsePosterdb failed for "${title}": ${error}`)
+      return { sets: [], capped: false, error }
+    } finally {
+      // Pages come over plain HTTP; the browser only steps in for a gated
+      // page. Drop it once no browse needs it so neither the desktop app nor
+      // a long-lived container keeps an idle Chromium around.
+      if (--_browsesInFlight === 0) await scraper.close().catch(() => {})
     }
   },
 

@@ -199,6 +199,20 @@ describe('SchedulerService._execute', () =>
     expect(state.config.appliedPosters![0]).toMatchObject({ itemKey: '10', setId: '100', posterUrls: ['main', 'e1'], slots: ['poster', 's1e1'], thumb: 'main' })
   })
 
+  it('records the set id and site for a ThePosterDB set job', async () =>
+  {
+    const tpdbUrl = 'https://theposterdb.com/set/5'
+    const tpdb = job({ urls: [tpdbUrl] })
+    state.config.scheduledJobs = [tpdb]
+    scrapeReturns({ [tpdbUrl]: [poster('main', { source: 'posterdb' }), poster('bg', { source: 'posterdb', season: 'Backdrop' })] })
+
+    await SchedulerService._execute(tpdb, 'manual')
+
+    expect(state.config.appliedPosters).toHaveLength(1)
+    expect(state.config.appliedPosters![0]).toMatchObject({ itemKey: '10', setId: '5', source: 'posterdb', slots: ['poster', 'backdrop'] })
+    expect(state.config.appliedPosters![0].uploader).toBeUndefined()
+  })
+
   it('re-applies everything when skipping applied artwork is turned off', async () =>
   {
     const noSkip = job({ skipApplied: false })

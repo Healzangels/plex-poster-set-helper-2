@@ -1,6 +1,7 @@
 import * as cheerio from 'cheerio'
 import { BaseScraper, sleepConfig, mapPool, USER_AGENTS } from './baseScraper'
 import { Logger } from '../services/logger'
+import { ConfigService } from '../services/config'
 import type { PosterInfo, PosterSetSummary } from '../ipc/types'
 
 const BASE = 'https://theposterdb.com'
@@ -15,18 +16,28 @@ const SEARCH_SECTION: Record<PosterdbMediaType, string> = {
   collection: 'collections',
 }
 
+/** Posters per media page; a shorter page is the last one. */
+const MEDIA_PAGE_SIZE = 24
 /**
- * Media pages list 24 posters each, newest-first by downloads. We stop after
- * this many sets: the tail is long, and every multi-poster set past this point
- * costs another page fetch to expand.
+ * Media pages are sorted by downloads, so the first two pages hold the sets
+ * worth showing. The result says when the site lists more.
  */
-const MAX_BROWSE_SETS = 30
-/** Hard bound on media pages walked while collecting those sets. */
-const MAX_BROWSE_PAGES = 3
-/** Parallel set-page fetches while expanding multi-poster sets. */
-const SET_FETCH_CONCURRENCY = 6
+const MAX_BROWSE_PAGES = 2
+const MAX_BROWSE_SETS = MEDIA_PAGE_SIZE * MAX_BROWSE_PAGES
+/** Rows per search page; a shorter page is the last one. */
+const SEARCH_PAGE_SIZE = 36
+/** Search pages walked for a title before it counts as absent. */
+const MAX_SEARCH_PAGES = 4
+/** Parallel set-page fetches; the Max Workers setting caps it further. */
+const SET_FETCH_CONCURRENCY = 4
 /** How long a resolved title -> media-page id mapping stays good. */
 const MEDIA_ID_TTL = 6 * 60 * 60 * 1000
+/** A miss is remembered only briefly: a new upload or a site hiccup must not hide a title for hours. */
+const MEDIA_MISS_TTL = 10 * 60 * 1000
+/** Plain HTTP budget per page before the browser takes over. */
+const FETCH_TIMEOUT_MS = 15_000
+/** Request types a browse page never needs; only its DOM is read. */
+const HEAVY_RESOURCES = new Set(['image', 'media', 'font', 'stylesheet'])
 
 /**
  * Classifies a ThePosterDB URL.
@@ -52,7 +63,7 @@ function posterAssetUrl(posterId: string): string {
   return `${BASE}/api/assets/${posterId}`
 }
 
-interface RawCard {
+export interface RawCard {
   posterId: string
   thumbUrl: string
   title: string
@@ -67,14 +78,31 @@ interface RawCard {
 }
 
 /**
- * Extracts the "(YYYY)" year from a poster title.
+ * Extracts the "(YYYY)" year from a poster title. The last one counts: a
+ * title can carry a year of its own ("Dune (1984): Redux (2021)").
  *
  * @param text - Raw card title.
  * @returns The year, or undefined.
  */
-function parseYear(text: string): number | undefined {
-  const m = text.match(/\((\d{4})\)/)
-  return m ? parseInt(m[1]) : undefined
+export function parseYear(text: string): number | undefined {
+  let year: number | undefined
+  for (const m of text.matchAll(/\((\d{4})\)/g)) year = parseInt(m[1])
+  return year
+}
+
+/**
+ * Reads the media title out of a card caption: "Title (Year)", optionally
+ * followed by " - Season N" or " - Specials". Only the trailing year goes, so
+ * a title with its own parenthetical ("Birds of Prey (and the Fantabulous
+ * Emancipation of One Harley Quinn)") survives intact.
+ *
+ * @param rawTitle - Raw card title.
+ * @returns The bare media title.
+ */
+export function parseCardTitle(rawTitle: string): string {
+  const m = rawTitle.match(/^(.*?)\s*\(\d{4}\)(?:\s*-\s*.*)?$/)
+  if (m) return m[1].trim()
+  return rawTitle.replace(/\s+-\s+(?:season\s+\d+|specials)\s*$/i, '').trim()
 }
 
 /**
@@ -105,7 +133,7 @@ function parseShowSeason(text: string): number | 'Cover' | undefined {
  * @param $ - Cheerio handle over the page HTML.
  * @returns One raw card per poster found.
  */
-function parseCards($: cheerio.CheerioAPI): RawCard[] {
+export function parseCards($: cheerio.CheerioAPI): RawCard[] {
   const cards: RawCard[] = []
 
   $('div.overlay[data-poster-id]').each((_, el) => {
@@ -115,6 +143,16 @@ function parseCards($: cheerio.CheerioAPI): RawCard[] {
 
     let $cell = $overlay.closest('div[class*="col-"]')
     if (!$cell.length) $cell = $overlay.parent()
+
+    // The specific selector wins; a comma-joined union with .first() would
+    // return whichever match comes first in the markup.
+    const firstOf = (...selectors: string[]) => {
+      for (const sel of selectors) {
+        const $el = $cell.find(sel).first()
+        if ($el.length) return $el
+      }
+      return $cell.find(selectors[0]).first()
+    }
 
     // data-poster-type is the modern attribute; the tooltip anchor's title
     // covers older markup
@@ -133,7 +171,7 @@ function parseCards($: cheerio.CheerioAPI): RawCard[] {
     ).trim()
     if (!rawTitle) return
 
-    const title = rawTitle.split(' (')[0].trim()
+    const title = parseCardTitle(rawTitle)
     const year = parseYear(rawTitle)
     const season = /show/i.test(mediaType) ? parseShowSeason(rawTitle) : undefined
 
@@ -153,10 +191,10 @@ function parseCards($: cheerio.CheerioAPI): RawCard[] {
       : rawThumb.startsWith('http') ? rawThumb
       : rawThumb ? `${BASE}${rawThumb}` : ''
 
-    const $setLink = $cell.find('a.set_poster_count[href*="/set/"], a[href*="/set/"]').first()
+    const $setLink = firstOf('a.set_poster_count[href*="/set/"]', 'a[href*="/set/"]')
     const setId = $setLink.attr('href')?.match(/\/set\/(\d+)/)?.[1]
     const setSize = parseInt($setLink.text().trim(), 10)
-    const uploader = $cell.find('p.uploaded-by a[href*="/user/"], a[href*="/user/"]').first().text().trim()
+    const uploader = firstOf('p.uploaded-by a[href*="/user/"]', 'a[href*="/user/"]').text().trim()
 
     cards.push({
       posterId, thumbUrl, title, mediaType, year, season,
@@ -175,7 +213,7 @@ function parseCards($: cheerio.CheerioAPI): RawCard[] {
  * @param cards - Cards from parseCards().
  * @returns Posters with original-quality URLs and display thumbs.
  */
-function cardsToPosters(cards: RawCard[]): PosterInfo[] {
+export function cardsToPosters(cards: RawCard[]): PosterInfo[] {
   return cards.map(c => ({
     title: c.title,
     url: posterAssetUrl(c.posterId),
@@ -194,12 +232,19 @@ function cardsToPosters(cards: RawCard[]): PosterInfo[] {
  * @param s - Raw title.
  * @returns The comparable form.
  */
-function normalizeTitle(s: string): string {
+/** Letters NFD cannot decompose, folded to their ASCII spelling. */
+const LETTER_FOLD: Record<string, string> = {
+  ø: 'o', ß: 'ss', ł: 'l', æ: 'ae', œ: 'oe', đ: 'd', ð: 'd', þ: 'th', ı: 'i',
+}
+
+export function normalizeTitle(s: string): string {
   return s
     .normalize('NFD').replace(/\p{M}/gu, '')   // strip accents: "Amélie" -> "amelie"
     .toLowerCase()
+    .replace(/[øßłæœđðþı]/g, ch => LETTER_FOLD[ch])
     .replace(/&/g, ' and ')
-    .replace(/[^a-z0-9]+/g, ' ')
+    // Letters of any script survive; only punctuation and symbols collapse.
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
     // Trim before dropping the article, or a title starting with punctuation
     // keeps a leading space and the article survives.
     .trim()
@@ -210,12 +255,24 @@ function normalizeTitle(s: string): string {
 export interface SearchHit { mediaId: string; title: string; year?: number }
 
 /**
+ * Tells a search results page from anything else that answered 200 in its
+ * place (a challenge or maintenance page), which must not be read as "no
+ * such title".
+ *
+ * @param $ - Cheerio handle over the page HTML.
+ * @returns true for a search results page.
+ */
+export function isSearchPage($: cheerio.CheerioAPI): boolean {
+  return /\bsearch\b/i.test($('title').first().text())
+}
+
+/**
  * Parses the search page's result rows.
  *
  * @param $ - Cheerio handle over the search HTML.
  * @returns Every "/posters/{id}" hit with its title and year.
  */
-function parseSearchHits($: cheerio.CheerioAPI): SearchHit[] {
+export function parseSearchHits($: cheerio.CheerioAPI): SearchHit[] {
   const hits: SearchHit[] = []
   $('a[href*="/posters/"]').each((_, el) => {
     const $a = $(el)
@@ -232,45 +289,65 @@ function parseSearchHits($: cheerio.CheerioAPI): SearchHit[] {
 }
 
 /**
- * Normalized titles a hit may carry and still be the thing we asked for. Plex
- * and ThePosterDB disagree on whether a collection's name ends in "Collection"
- * ("Harry Potter" vs "Harry Potter Collection"), so both spellings count.
+ * Normalized titles a hit may carry and still be the thing we asked for, best
+ * first. Plex can suffix a title with a country or year ("The Office (US)")
+ * that ThePosterDB does not carry, and the two disagree on whether a
+ * collection's name ends in "Collection", so those spellings count too.
  *
  * @param title - Plex title.
  * @param type - What kind of item is being browsed.
- * @returns Every acceptable normalized form.
+ * @returns Every acceptable normalized form; empty when the title has no
+ *   letters or digits to match on.
  */
-function titleAliases(title: string, type: PosterdbMediaType): string[] {
-  const base = normalizeTitle(title)
-  if (type !== 'collection') return [base]
-  const bare = base.replace(/ collection$/, '')
-  return [...new Set([base, bare, `${bare} collection`])]
+export function titleAliases(title: string, type: PosterdbMediaType): string[] {
+  const forms = [title]
+  const bare = title.replace(/\s*\([^()]*\)\s*$/, '').trim()
+  if (bare && bare !== title) forms.push(bare)
+  const normalized = [...new Set(forms.map(normalizeTitle).filter(Boolean))]
+  if (type !== 'collection') return normalized
+  return [...new Set(normalized.flatMap(n => {
+    const base = n.replace(/ collection$/, '')
+    return [n, base, `${base} collection`]
+  }))]
 }
 
 /**
- * Picks the search hit that actually is the title we asked for. Year is the
- * tie-breaker, not a requirement: TPDb often carries no year at all, and a
- * remake with the same name is exactly what the year disambiguates.
+ * Whether a hit's year agrees with the one Plex holds. Within a year either
+ * side counts: Plex and TPDb disagree on late-December and festival-vs-wide
+ * release dates often enough to matter.
+ *
+ * @param hit - A search hit.
+ * @param year - Plex release year, when known.
+ * @returns true when there is no year to disagree with, or the years agree.
+ */
+export function yearMatches(hit: SearchHit, year?: number): boolean {
+  return year == null || (hit.year != null && Math.abs(hit.year - year) <= 1)
+}
+
+/**
+ * Picks the search hit that actually is the title we asked for. Earlier
+ * aliases win over later ones; among those, the year decides: a row with a
+ * different year is another release, while a row with no year may still be
+ * the title.
  *
  * @param hits - Rows from parseSearchHits().
  * @param wants - Acceptable normalized titles, from titleAliases().
  * @param year - Plex release year, when known.
- * @returns The best hit, or null when nothing matches the title.
+ * @returns The best hit, or null when nothing matches.
  */
-function pickSearchHit(hits: SearchHit[], wants: string[], year?: number): SearchHit | null {
-  const exact = hits.filter(h => wants.includes(normalizeTitle(h.title)))
+export function pickSearchHit(hits: SearchHit[], wants: string[], year?: number): SearchHit | null {
+  const rank = (h: SearchHit) => wants.indexOf(normalizeTitle(h.title))
+  const exact = hits.filter(h => rank(h) >= 0).sort((a, b) => rank(a) - rank(b))
   if (!exact.length) return null
   if (year == null) return exact[0]
   return exact.find(h => h.year === year)
-    // Within a year either side - Plex and TPDb disagree on late-December and
-    // festival-vs-wide release dates often enough to matter.
-    ?? exact.find(h => h.year != null && Math.abs(h.year - year) <= 1)
+    ?? exact.find(h => yearMatches(h, year))
     ?? exact.find(h => h.year == null)
-    ?? exact[0]
+    ?? null
 }
 
 /** A set discovered on a media page, before its full contents are known. */
-interface SetStub {
+export interface SetStub {
   setId: string
   uploader: string
   /** Poster count from the card's badge - how many posters the set holds. */
@@ -286,7 +363,7 @@ interface SetStub {
  * @param cards - Cards parsed from a media page.
  * @returns One stub per distinct set, first card wins.
  */
-function stubsFromCards(cards: RawCard[]): SetStub[] {
+export function stubsFromCards(cards: RawCard[]): SetStub[] {
   const stubs = new Map<string, SetStub>()
   for (const c of cards) {
     if (!c.setId || stubs.has(c.setId)) continue
@@ -311,7 +388,7 @@ function stubsFromCards(cards: RawCard[]): SetStub[] {
  * @param type - What kind of item is being browsed.
  * @returns The same posters with isCollection/isCollectionMember settled.
  */
-function classifySetPosters(
+export function classifySetPosters(
   posters: PosterInfo[],
   title: string,
   year: number | undefined,
@@ -346,8 +423,38 @@ const avatarCache = new Map<string, { url: string | null; at: number }>()
  * @param username - Uploader name as shown on the site.
  * @returns The guessed CDN URL.
  */
-function guessedAvatarUrl(username: string): string {
+export function guessedAvatarUrl(username: string): string {
   return `https://images.theposterdb.com/prod/public/images/users/${encodeURIComponent(username)}/avatar.webp`
+}
+
+/**
+ * Fetches a page over plain HTTP. ThePosterDB serves its search, media, set
+ * and profile pages to a browser-like client without a challenge, which is
+ * many times faster than driving the headless browser; callers fall back to
+ * the browser when this returns null.
+ *
+ * @param url - Page to fetch.
+ * @returns The HTML, or null on a transport failure or non-2xx status.
+ */
+async function fetchHtml(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': USER_AGENTS[0],
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    })
+    if (!res.ok) {
+      Logger.scrape('PosterDB', `HTTP ${res.status} for ${url}`)
+      return null
+    }
+    return await res.text()
+  } catch (err) {
+    Logger.scrape('PosterDB', `HTTP fetch failed [${url}]: ${err instanceof Error ? err.message : err}`)
+    return null
+  }
 }
 
 /**
@@ -360,7 +467,7 @@ function guessedAvatarUrl(username: string): string {
  *   silhouette (the app's own icon looks the same and fits the theme), or
  *   undefined when the page has no avatar element at all.
  */
-function parseProfileAvatar($: cheerio.CheerioAPI): string | null | undefined {
+export function parseProfileAvatar($: cheerio.CheerioAPI): string | null | undefined {
   const $img = $('img.tpdb-avatar').first()
   if (!$img.length) return undefined
   const raw =
@@ -374,15 +481,13 @@ function parseProfileAvatar($: cheerio.CheerioAPI): string | null | undefined {
 
 /**
  * Resolves the avatar for each uploader by reading their profile page over
- * plain HTTP - profiles aren't bot-gated the way set pages are, so this skips
- * the headless browser and costs well under a second per uploader. Results are
- * cached for a day; a failed fetch falls back to the guessed CDN URL without
- * caching, so a hiccup isn't remembered.
+ * plain HTTP. Results are cached for a day; a failed fetch falls back to the
+ * guessed CDN URL without caching, so a hiccup isn't remembered.
  *
  * @param usernames - Uploaders to resolve; duplicates are fine.
  * @returns Lowercased username to avatar URL (null = generic icon).
  */
-async function resolveAvatars(usernames: string[]): Promise<Map<string, string | null>> {
+export async function resolveAvatars(usernames: string[]): Promise<Map<string, string | null>> {
   const out = new Map<string, string | null>()
   const pending: string[] = []
   for (const name of new Set(usernames)) {
@@ -395,12 +500,9 @@ async function resolveAvatars(usernames: string[]): Promise<Map<string, string |
   await mapPool(pending, AVATAR_FETCH_CONCURRENCY, async name => {
     const key = name.toLowerCase()
     try {
-      const res = await fetch(`${BASE}/user/${encodeURIComponent(name)}`, {
-        headers: { 'User-Agent': USER_AGENTS[0], Accept: 'text/html' },
-        signal: AbortSignal.timeout(10_000),
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const found = parseProfileAvatar(cheerio.load(await res.text()))
+      const html = await fetchHtml(`${BASE}/user/${encodeURIComponent(name)}`)
+      if (html === null) throw new Error('profile page did not load')
+      const found = parseProfileAvatar(cheerio.load(html))
       if (found === undefined) throw new Error('no avatar element on profile page')
       avatarCache.set(key, { url: found, at: Date.now() })
       out.set(key, found)
@@ -421,7 +523,7 @@ async function resolveAvatars(usernames: string[]): Promise<Map<string, string |
  * @param type - What kind of item is being browsed.
  * @returns The summary the panel renders.
  */
-function stubToSummary(
+export function stubToSummary(
   stub: SetStub,
   posters: PosterInfo[],
   setName: string,
@@ -451,9 +553,49 @@ function stubToSummary(
 /** Resolved media-page ids, so reopening a title doesn't re-run the search. */
 const mediaIdCache = new Map<string, { hit: SearchHit | null; at: number }>()
 
-function mediaCacheKey(title: string, year: number | undefined, type: PosterdbMediaType): string {
+export function mediaCacheKey(title: string, year: number | undefined, type: PosterdbMediaType): string {
   return `${type}|${normalizeTitle(title)}|${year ?? ''}`
 }
+
+/** Drops every remembered title match and avatar (Settings -> Clear cached data, and tests). */
+export function resetPosterdbCaches(): void {
+  mediaIdCache.clear()
+  avatarCache.clear()
+}
+
+/**
+ * Only movie, show and collection cards are art for the library; a set can
+ * also carry people (a director's poster) that would otherwise be reported as
+ * collection members.
+ *
+ * @param card - A parsed card.
+ * @returns true for a card the browser should show.
+ */
+export function isMediaCard(card: RawCard): boolean {
+  return /movie|show|collection/i.test(card.mediaType)
+}
+
+/**
+ * Set names on set pages carry the title's year ("Breaking Bad (2008)") while
+ * card captions do not; strip it so both branches name sets alike.
+ *
+ * @param name - Name read from the page title.
+ * @returns The name without a trailing year.
+ */
+export function cleanSetName(name: string): string {
+  return name.replace(/\s*\(\d{4}\)\s*$/, '').trim()
+}
+
+/** What the library browser gets back for a title. */
+export interface PosterdbBrowseResult {
+  sets: PosterSetSummary[]
+  /** The site lists more sets than were read. */
+  capped: boolean
+  /** The title's media page on the site, once resolved. */
+  mediaUrl?: string
+}
+
+const NO_RESULT: PosterdbBrowseResult = { sets: [], capped: false }
 
 /** Scrapes ThePosterDB set, single-poster, and user-upload pages via a headless browser. */
 export class PosterdbScraper extends BaseScraper {
@@ -587,22 +729,32 @@ export class PosterdbScraper extends BaseScraper {
   }
 
   /**
-   * Fetches one page and hands its HTML to a parser.
+   * Loads one page through the headless browser and hands its HTML to a
+   * parser. A browser that cannot start propagates, so the caller can say why
+   * the site was not searched; a page that fails to load or renders without
+   * the expected content yields null.
    *
    * @param url - Page to load.
    * @param waitFor - Selector that signals the content rendered.
-   * @param parse - Receives the loaded HTML.
-   * @returns The parser's result, or null when the page failed to load.
+   * @param parse - Receives the loaded HTML; may return null to reject the page.
+   * @returns The parser's result, or null when the page was unusable.
    */
   private async _withPage<T>(
     url: string,
     waitFor: string,
-    parse: ($: cheerio.CheerioAPI) => T,
+    parse: ($: cheerio.CheerioAPI) => T | null,
   ): Promise<T | null> {
     const { context, page } = await this.newContext()
     try {
+      await context.route('**/*', route =>
+        HEAVY_RESOURCES.has(route.request().resourceType()) ? route.abort() : route.continue())
       await this.navigate(page, url, waitFor)
-      return parse(cheerio.load(await page.content()))
+      const $ = cheerio.load(await page.content())
+      if (!$(waitFor).length) {
+        Logger.warn('PosterDB', `Page rendered without its content [${url}]`)
+        return null
+      }
+      return parse($)
     } catch (err) {
       Logger.warn('PosterDB', `Page load failed [${url}]: ${err instanceof Error ? err.message : err}`)
       return null
@@ -612,30 +764,78 @@ export class PosterdbScraper extends BaseScraper {
   }
 
   /**
+   * Loads one page, over plain HTTP first and through the browser only when
+   * the fetch fails or comes back without the expected content.
+   *
+   * @param url - Page to load.
+   * @param waitFor - Selector that proves the content is there.
+   * @param parse - Receives the loaded HTML; may return null to reject the page.
+   * @returns The parser's result, or null when neither path produced a usable page.
+   */
+  private async _loadPage<T>(
+    url: string,
+    waitFor: string,
+    parse: ($: cheerio.CheerioAPI) => T | null,
+  ): Promise<T | null> {
+    const html = await fetchHtml(url)
+    if (html !== null) {
+      const $ = cheerio.load(html)
+      if ($(waitFor).length) {
+        const result = parse($)
+        if (result !== null) return result
+      }
+    }
+    if (this._aborted) return null
+    return this._withPage(url, waitFor, parse)
+  }
+
+  /**
    * Resolves a Plex title to its ThePosterDB media page. ThePosterDB gates
-   * external-id search behind TPDb Pro, so this matches on title and year -
-   * hence the deliberately strict pickSearchHit().
+   * external-id search behind TPDb Pro, so this matches on title and year.
+   * Search results are paginated newest-first, so a title whose name recurs
+   * in newer releases sits a few pages in; the walk stops at the first row
+   * whose year agrees.
    *
    * @param title - Plex title.
    * @param year - Release year, when known.
    * @param type - Movie, show, or collection.
+   * @param fresh - Skip the remembered match (the panel's Refresh button).
    * @returns The matching media page, or null when the title isn't on the site.
    */
-  async findMedia(title: string, year: number | undefined, type: PosterdbMediaType): Promise<SearchHit | null> {
+  async findMedia(title: string, year: number | undefined, type: PosterdbMediaType, fresh = false): Promise<SearchHit | null> {
+    const wants = titleAliases(title, type)
+    if (!wants.length) return null
+
     const cacheKey = mediaCacheKey(title, year, type)
     const cached = mediaIdCache.get(cacheKey)
-    if (cached && Date.now() - cached.at < MEDIA_ID_TTL) return cached.hit
+    if (cached && !fresh && Date.now() - cached.at < (cached.hit ? MEDIA_ID_TTL : MEDIA_MISS_TTL)) return cached.hit
 
-    const url = `${BASE}/search?term=${encodeURIComponent(title)}&section=${SEARCH_SECTION[type]}`
-    const hits = await this._withPage(url, 'a[href*="/posters/"]', parseSearchHits)
-    // A failed load is not a "no such title" - leave it uncached so the next
-    // open retries instead of showing an empty panel for the next six hours.
-    if (hits === null) return null
+    const label = `${type} "${title}"${year ? ` (${year})` : ''}`
+    let fallback: SearchHit | null = null
+    let rows = 0
+    for (let page = 1; page <= MAX_SEARCH_PAGES && !this._aborted; page++) {
+      const url = `${BASE}/search?term=${encodeURIComponent(title)}&section=${SEARCH_SECTION[type]}${page > 1 ? `&page=${page}` : ''}`
+      const hits = await this._loadPage(url, 'a[href*="/posters/"]', $ => isSearchPage($) ? parseSearchHits($) : null)
+      // A page that failed to load, or that was not a results page at all,
+      // says nothing about the title: leave the cache alone so the next open
+      // retries instead of showing an empty panel for hours.
+      if (hits === null) return fallback
 
-    const hit = pickSearchHit(hits, titleAliases(title, type), year)
-    mediaIdCache.set(cacheKey, { hit, at: Date.now() })
-    if (!hit) Logger.scrape('PosterDB', `No ${type} match for "${title}"${year ? ` (${year})` : ''} among ${hits.length} result(s)`)
-    return hit
+      rows += hits.length
+      const hit = pickSearchHit(hits, wants, year)
+      if (hit && yearMatches(hit, year)) {
+        mediaIdCache.set(cacheKey, { hit, at: Date.now() })
+        return hit
+      }
+      fallback ??= hit
+      if (hits.length < SEARCH_PAGE_SIZE) break
+      await sleepConfig('min')
+    }
+    if (this._aborted) return fallback
+
+    mediaIdCache.set(cacheKey, { hit: fallback, at: Date.now() })
+    if (!fallback) Logger.scrape('PosterDB', `No match for ${label} among ${rows} result(s)`)
+    return fallback
   }
 
   /**
@@ -647,36 +847,44 @@ export class PosterdbScraper extends BaseScraper {
    * @param title - Plex title.
    * @param year - Release year, when known.
    * @param type - Movie, show, or collection.
-   * @returns Set summaries, most-downloaded first, capped at MAX_BROWSE_SETS.
+   * @param fresh - Skip the remembered title match.
+   * @returns Set summaries, most-downloaded first, with a flag when the site has more.
    */
-  async browseSets(title: string, year: number | undefined, type: PosterdbMediaType): Promise<PosterSetSummary[]> {
-    const media = await this.findMedia(title, year, type)
-    if (!media || this._aborted) return []
+  async browseSets(title: string, year: number | undefined, type: PosterdbMediaType, fresh = false): Promise<PosterdbBrowseResult> {
+    const media = await this.findMedia(title, year, type, fresh)
+    if (!media || this._aborted) return NO_RESULT
+    const mediaUrl = `${BASE}/posters/${media.mediaId}`
 
     const stubs: SetStub[] = []
     const seen = new Set<string>()
-    for (let page = 1; page <= MAX_BROWSE_PAGES && stubs.length < MAX_BROWSE_SETS && !this._aborted; page++) {
-      const url = `${BASE}/posters/${media.mediaId}${page > 1 ? `?page=${page}` : ''}`
-      const cards = await this._withPage(url, 'div.overlay[data-poster-id]', parseCards)
-      if (!cards?.length) break
+    let lastPageFull = false
+    for (let page = 1; page <= MAX_BROWSE_PAGES && !this._aborted; page++) {
+      const url = page > 1 ? `${mediaUrl}?page=${page}` : mediaUrl
+      const cards = await this._loadPage(url, 'div.overlay[data-poster-id]', parseCards)
+      if (!cards?.length) {
+        lastPageFull = false
+        break
+      }
       for (const stub of stubsFromCards(cards)) {
         if (seen.has(stub.setId)) continue
         seen.add(stub.setId)
         stubs.push(stub)
       }
-      if (cards.length < 24) break     // short page - end of the catalog
-      await sleepConfig('min')
+      lastPageFull = cards.length >= MEDIA_PAGE_SIZE
+      if (!lastPageFull) break
+      if (page < MAX_BROWSE_PAGES) await sleepConfig('min')
     }
-    if (this._aborted) return []
+    if (this._aborted) return NO_RESULT
 
-    const capped = stubs.length > MAX_BROWSE_SETS
+    const capped = lastPageFull || stubs.length > MAX_BROWSE_SETS
     const wanted = stubs.slice(0, MAX_BROWSE_SETS)
 
-    // Avatars resolve over plain HTTP alongside the set expansion, so they add
-    // no wait of their own.
+    // Avatars resolve alongside the set expansion, so they add no wait of
+    // their own.
     const avatarsP = resolveAvatars(wanted.map(s => s.uploader))
 
-    const summaries = await mapPool(wanted, SET_FETCH_CONCURRENCY, async stub => {
+    const concurrency = Math.max(1, Math.min(SET_FETCH_CONCURRENCY, ConfigService.get().maxWorkers))
+    const summaries = await mapPool(wanted, concurrency, async stub => {
       // A one-poster set is fully described by the card we already have, so the
       // common movie case costs no extra page loads at all.
       if (stub.size <= 1) {
@@ -685,10 +893,10 @@ export class PosterdbScraper extends BaseScraper {
       }
       if (this._aborted) return null
       const setUrl = `${BASE}/set/${stub.setId}`
-      const parsed = await this._withPage(setUrl, 'div.overlay[data-poster-id]', $ => ({
-        cards: parseCards($),
+      const parsed = await this._loadPage(setUrl, 'div.overlay[data-poster-id]', $ => ({
+        cards: parseCards($).filter(isMediaCard),
         // "<Set name> Set By <uploader> | The Poster Database (TPDb)"
-        name: $('title').first().text().split(/\s+Set By\s+/i)[0].trim(),
+        name: cleanSetName($('title').first().text().split(/\s+Set By\s+/i)[0]),
       }))
       if (!parsed?.cards.length) return null
       const posters = classifySetPosters(cardsToPosters(parsed.cards), title, year, type)
@@ -704,8 +912,8 @@ export class PosterdbScraper extends BaseScraper {
       })
     Logger.scrape(
       'PosterDB',
-      `Browse ${type} "${title}"${year ? ` (${year})` : ''} - ${sets.length} set(s) from /posters/${media.mediaId}${capped ? ` (capped at ${MAX_BROWSE_SETS})` : ''}`,
+      `Browse ${type} "${title}"${year ? ` (${year})` : ''} - ${sets.length} set(s) from ${mediaUrl}${capped ? ' (more on the site)' : ''}`,
     )
-    return sets
+    return { sets, capped, mediaUrl }
   }
 }

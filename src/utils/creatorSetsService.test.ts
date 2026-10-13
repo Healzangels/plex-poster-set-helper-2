@@ -110,6 +110,18 @@ describe('CreatorSetsService.catalog', () =>
     expect(ScraperFactory.browseMediuxUserAll).not.toHaveBeenCalled()
   })
 
+  it('fills in the site for sets cached before they carried one, without crawling', async () =>
+  {
+    const legacy = { ...userSet('legacy', 'd0'), source: undefined }
+    const cached = { username: 'Alice', sets: [legacy, userSet('tagged', 'd1')], capped: false, fetchedAt: Date.now() }
+    fs.writeFileSync(path.join(dir, 'creator-sets.json'), JSON.stringify({ version: CREATOR_CACHE_VERSION, creators: { alice: cached } }))
+
+    const { sets } = await CreatorSetsService.catalog('Alice')
+
+    expect(sets.map(s => [s.id, s.source])).toEqual([['legacy', 'mediux'], ['tagged', 'mediux']])
+    expect(ScraperFactory.browseMediuxUserAll).not.toHaveBeenCalled()
+  })
+
   it('drops a catalog cached by an older version and crawls again', async () =>
   {
     const stale = { username: 'Alice', sets: [userSet('stale', 'd0')], capped: false, fetchedAt: Date.now() }

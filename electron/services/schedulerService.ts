@@ -13,7 +13,7 @@ import { getUserDataPath } from '../runtime/paths'
 import { appEvents } from '../runtime/events'
 import { isWebMode } from '../runtime/runtime'
 import {
-  addSlotCoverage, appliedUrlIndex, creatorOfUrl, describeRun, emptyTally, failedRun, finishRun, isSlotCovered,
+  addSlotCoverage, appliedUrlIndex, coverageKey, creatorOfUrl, describeRun, emptyTally, failedRun, finishRun, isSlotCovered,
   mergeAppliedRecords, normalizeJob, posterKind, posterSlot, previewCron, recordRun, recoverInterrupted, setRefOfUrl,
   reorderJobs, slotCoverage, titleLabel, withNextRun, type RunTally, type SlotCoverage,
 } from './scheduleUtils'
@@ -53,6 +53,8 @@ interface ResolvedItem {
 /** Where a poster came from, for history records and matching. */
 interface PosterSource {
   setId?: string
+  /** The set's {@link coverageKey}; ids alone collide across sites. */
+  setKey?: string
   uploader?: string
   mediaType?: 'movie' | 'show'
 }
@@ -434,7 +436,7 @@ export const SchedulerService = {
         return
       }
       const slot = posterSlot(poster)
-      if (ctx.coverage && isSlotCovered(ctx.coverage, target.key, slot, source.setId)) {
+      if (ctx.coverage && isSlotCovered(ctx.coverage, target.key, slot, source.setKey)) {
         tally.covered++
         tally.coveredTitles.set(targetLabel, (tally.coveredTitles.get(targetLabel) ?? 0) + 1)
         return
@@ -464,9 +466,9 @@ export const SchedulerService = {
 
       tally.uploaded++
       tally.appliedTitles.set(targetLabel, (tally.appliedTitles.get(targetLabel) ?? 0) + 1)
-      if (ctx.coverage) addSlotCoverage(ctx.coverage, target.key, slot, source.setId)
+      if (ctx.coverage) addSlotCoverage(ctx.coverage, target.key, slot, source.setKey)
 
-      const recKey = `${target.key}|${source.setId ?? ''}`
+      const recKey = `${target.key}|${source.setKey ?? ''}`
       const isMain = poster.season == null && poster.episode == null
       const thumb = poster.thumbUrl ?? poster.url
       const rec = ctx.records.get(recKey)
@@ -540,7 +542,12 @@ export const SchedulerService = {
     }
     // The record's source comes from each poster, so the id just has to be
     // read from whichever site the URL is on.
-    const source: PosterSource = { setId: setRefOfUrl(url)?.id, uploader: job.creator }
+    const ref = setRefOfUrl(url)
+    const source: PosterSource = {
+      setId: ref?.id,
+      setKey: ref ? coverageKey(ref.source, ref.id) : undefined,
+      uploader: job.creator,
+    }
     for (let j = 0; j < posters.length; j++) {
       this._setProgress(job.id, { ...base, poster: { done: j, total: posters.length } })
       await this._applyPoster(ctx, posters[j], source)

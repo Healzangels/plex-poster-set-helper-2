@@ -18,11 +18,31 @@ import type {
   SectionItemsReq, BrowseSetsReq, BrowseSetsRes, UserSetsReq, UserSetsRes,
   UserSetsSnapshot, CollectionsReq, CollectionSetsReq,
   CreatorSearchReq, MediuxUserSet, AppEnv, UpdateInfo,
-  CurrentArtReq, ClearCachesRes, AppliedRecord,
+  CurrentArtReq, ClearCachesRes, AppliedRecord, PosterSetSummary,
 } from '../ipc/types'
 import { mergeAppliedRecords } from '../services/scheduleUtils'
+import { browseOutcome, type SourceResult } from '../services/browseSets'
+import { resetPosterdbCaches } from '../scrapers/posterdbScraper'
 
 const REPO = 'molexxxx/plex-poster-set-helper-2'
+
+/**
+ * Runs one site's browse and keeps its failure to itself, so the other site's
+ * sets still reach the panel.
+ *
+ * @param site - Name for the log line.
+ * @param run - The browse.
+ * @returns The sets, or an empty result carrying the reason.
+ */
+async function browseSource(site: string, run: () => Promise<PosterSetSummary[]>): Promise<SourceResult> {
+  try {
+    return { sets: await run() }
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
+    Logger.warn('Library', `${site} browse failed: ${error}`)
+    return { sets: [], error }
+  }
+}
 const REPO_URL = `https://github.com/${REPO}`
 
 function emitAuth(status: PlexAuthStatus) {
@@ -79,70 +99,79 @@ export const handlers = {
     items: (req: SectionItemsReq) => PlexService.getSectionItems(req),
     collections: (req: CollectionsReq) => PlexService.listCollections(req),
     collectionSets: async (req: CollectionSetsReq): Promise<BrowseSetsRes> => {
+      const want = new Set(req.sources ?? ['mediux', 'posterdb'])
       try {
         const info = await PlexService.getCollectionInfo(req.collectionKey)
         const title = info.title || req.title
         if (!info.children.length) return { sets: [], error: 'no_movies' }
 
-        // Resolve every member's TMDB id at once - each is an independent Plex/
-        // TMDB lookup, so a sequential loop just stacks the latency. Promise.all
-        // preserves order, which matters: the first id seeds the collection-id
-        // lookup and the fallback scan walks members in order.
-        const resolved = await Promise.all(info.children.map(child => PlexService.resolveTmdbId(child)))
-        const childTmdbIds = resolved.filter((id): id is string => !!id)
+        // MediUX is looked up by TMDB id, ThePosterDB by collection name; the
+        // two run side by side and neither can spoil the other's results.
+        const mediuxP = want.has('mediux') ? (async () => {
+          // Resolve every member's TMDB id at once - each is an independent Plex/
+          // TMDB lookup, so a sequential loop just stacks the latency. Promise.all
+          // preserves order, which matters: the first id seeds the collection-id
+          // lookup and the fallback scan walks members in order.
+          const resolved = await Promise.all(info.children.map(child => PlexService.resolveTmdbId(child)))
+          const childTmdbIds = resolved.filter((id): id is string => !!id)
 
-        let tmdbCollectionId = info.tmdbCollectionId
-        if (!tmdbCollectionId && childTmdbIds[0]) {
-          tmdbCollectionId = (await PlexService.resolveTmdbCollectionId(childTmdbIds[0])) ?? undefined
+          let tmdbCollectionId = info.tmdbCollectionId
+          if (!tmdbCollectionId && childTmdbIds[0]) {
+            tmdbCollectionId = (await PlexService.resolveTmdbCollectionId(childTmdbIds[0])) ?? undefined
+          }
+          const hasTmdb = !!tmdbCollectionId || childTmdbIds.length > 0
+          Logger.scrape(
+            'Library',
+            `Collection "${title}": tmdbCollection=${tmdbCollectionId ?? 'none'}, ${childTmdbIds.length}/${info.children.length} child TMDB id(s)`,
+          )
+          const result = hasTmdb
+            ? await browseSource('MediUX', () => ScraperFactory.browseMediuxCollection(title, tmdbCollectionId, childTmdbIds))
+            : { sets: [] }
+          return { hasTmdb, result }
+        })() : undefined
+        const posterdbP = want.has('posterdb')
+          ? ScraperFactory.browsePosterdb(title, undefined, 'collection', req.fresh)
+          : undefined
+        const [mediux, posterdb] = await Promise.all([mediuxP, posterdbP])
+
+        return {
+          ...browseOutcome({ hasTmdb: mediux?.hasTmdb ?? true, mediux: mediux?.result, posterdb }),
+          collectionMembers: info.children,
+          posterdbCapped: posterdb?.capped || undefined,
+          posterdbUrl: posterdb?.mediaUrl,
         }
-
-        const hasTmdb = !!tmdbCollectionId || childTmdbIds.length > 0
-
-        Logger.scrape(
-          'Library',
-          `Collection "${title}": tmdbCollection=${tmdbCollectionId ?? 'none'}, ${childTmdbIds.length}/${info.children.length} child TMDB id(s)`,
-        )
-
-        // Same split as the per-title browse: MediUX by TMDB id, ThePosterDB by
-        // collection name.
-        const [mediux, posterdb] = await Promise.all([
-          hasTmdb
-            ? ScraperFactory.browseMediuxCollection(title, tmdbCollectionId, childTmdbIds)
-            : Promise.resolve([]),
-          ScraperFactory.browsePosterdb(title, undefined, 'collection'),
-        ])
-
-        const sets = [...mediux, ...posterdb]
-        if (!hasTmdb && !sets.length) return { sets: [], error: 'no_tmdb' }
-        return hasTmdb
-          ? { sets, collectionMembers: info.children }
-          : { sets, collectionMembers: info.children, tmdbMissing: true }
       } catch (err) {
         Logger.error('Library', `collectionSets failed: ${err instanceof Error ? err.message : String(err)}`)
         return { sets: [], error: err instanceof Error ? err.message : String(err) }
       }
     },
     sets: async (req: BrowseSetsReq): Promise<BrowseSetsRes> => {
+      const want = new Set(req.sources ?? ['mediux', 'posterdb'])
       try {
-        const tmdbId = await PlexService.resolveTmdbId({
-          key: '', title: '', type: req.type,
-          tmdbId: req.tmdbId, tvdbId: req.tvdbId, imdbId: req.imdbId, anidbId: req.anidbId,
-        })
-
         // The two sites are looked up independently and in parallel: MediUX
         // needs a TMDB id, ThePosterDB matches on title. Either can come back
-        // empty without spoiling the other's results.
-        const [mediux, posterdb] = await Promise.all([
-          tmdbId ? ScraperFactory.browseMediux(tmdbId, req.type) : Promise.resolve([]),
-          req.title ? ScraperFactory.browsePosterdb(req.title, req.year, req.type) : Promise.resolve([]),
-        ])
+        // empty, or fail, without spoiling the other's results.
+        const mediuxP = want.has('mediux') ? (async () => {
+          const tmdbId = (await PlexService.resolveTmdbId({
+            key: '', title: '', type: req.type,
+            tmdbId: req.tmdbId, tvdbId: req.tvdbId, imdbId: req.imdbId, anidbId: req.anidbId,
+          })) ?? undefined
+          const result = tmdbId
+            ? await browseSource('MediUX', () => ScraperFactory.browseMediux(tmdbId, req.type))
+            : { sets: [] }
+          return { tmdbId, result }
+        })() : undefined
+        const posterdbP = want.has('posterdb') && req.title
+          ? ScraperFactory.browsePosterdb(req.title, req.year, req.type, req.fresh)
+          : undefined
+        const [mediux, posterdb] = await Promise.all([mediuxP, posterdbP])
 
-        const sets = [...mediux, ...posterdb]
-        // Only a total miss on an unresolvable item is an error worth blocking
-        // the panel with; when ThePosterDB found something, "no TMDB id" is just
-        // a note explaining why MediUX is absent.
-        if (!tmdbId && !sets.length) return { sets: [], error: 'no_tmdb' }
-        return tmdbId ? { sets, tmdbId } : { sets, tmdbMissing: true }
+        return {
+          ...browseOutcome({ hasTmdb: !!mediux?.tmdbId, mediux: mediux?.result, posterdb }),
+          tmdbId: mediux?.tmdbId,
+          posterdbCapped: posterdb?.capped || undefined,
+          posterdbUrl: posterdb?.mediaUrl,
+        }
       } catch (err) {
         Logger.error('Library', `browse sets failed: ${err instanceof Error ? err.message : err}`)
         return { sets: [], error: err instanceof Error ? err.message : String(err) }
@@ -354,8 +383,9 @@ export const handlers = {
       CreatorSetsService.clearDisk()
       ShowStatusService.clearDisk()
       PlexService.clearGridCaches()
+      resetPosterdbCaches()
       Logger.info('App', 'Cached data cleared')
-      return { cleared: ['Creator catalogs', 'Series statuses', 'Library listings'] }
+      return { cleared: ['Creator catalogs', 'Series statuses', 'Library listings', 'ThePosterDB title matches'] }
     },
   },
 

@@ -24,7 +24,23 @@ describe('appliedByItem and appliedUploaders', () =>
     ]
     expect([...appliedByItem(records).keys()]).toEqual(['1', '2', '3'])
     expect(appliedByItem(records).get('1')).toHaveLength(2)
-    expect(appliedUploaders(records)).toEqual([{ uploader: 'Willtong93', count: 2 }, { uploader: 'tallinex', count: 1 }])
+    expect(appliedUploaders(records)).toEqual([
+      { uploader: 'Willtong93', source: 'mediux', count: 2 },
+      { uploader: 'tallinex', source: 'mediux', count: 1 },
+    ])
+  })
+
+  it('keeps the same name on MediUX and ThePosterDB as two creators', () =>
+  {
+    const records = [
+      rec('1', { uploader: 'alice', setId: 'a' }),
+      rec('2', { uploader: 'Alice', setId: 'b', source: 'posterdb' }),
+      rec('3', { uploader: 'alice', setId: 'c', source: 'posterdb' }),
+    ]
+    expect(appliedUploaders(records)).toEqual([
+      { uploader: 'Alice', source: 'posterdb', count: 2 },
+      { uploader: 'alice', source: 'mediux', count: 1 },
+    ])
   })
 })
 
@@ -45,6 +61,14 @@ describe('artFilterMatches', () =>
     expect(artFilterMatches({ kind: 'uploader', uploader: 'WILLTONG93' }, [rec('1', { uploader: 'willtong93' })], coverage)).toBe(true)
     expect(artFilterMatches({ kind: 'uploader', uploader: 'tallinex' }, [rec('1', { uploader: 'willtong93' })], coverage)).toBe(false)
     expect(artFilterMatches({ kind: 'uploader', uploader: 'tallinex' }, [rec('1')], coverage)).toBe(false)
+  })
+
+  it('narrows a creator to one site when the filter names it', () =>
+  {
+    const fromTpdb = [rec('1', { uploader: 'alice', source: 'posterdb' })]
+    expect(artFilterMatches({ kind: 'uploader', uploader: 'alice', source: 'posterdb' }, fromTpdb, coverage)).toBe(true)
+    expect(artFilterMatches({ kind: 'uploader', uploader: 'alice', source: 'mediux' }, fromTpdb, coverage)).toBe(false)
+    expect(artFilterMatches({ kind: 'uploader', uploader: 'alice' }, fromTpdb, coverage)).toBe(true)
   })
 
   it('finds applied art that no enabled job keeps updated', () =>

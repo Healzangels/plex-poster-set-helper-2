@@ -785,10 +785,28 @@ export function setRefOfUrl(url: string): { source: 'mediux' | 'posterdb'; id: s
   return posterdb ? { source: 'posterdb', id: posterdb } : null
 }
 
-/** Coverage-map key for a set: "source:id". */
-function coverageKey(source: 'mediux' | 'posterdb', id: string): string
+/**
+ * Coverage-map key for a set: "source:id". Set ids collide across sites, so
+ * every index that must tell two sets apart keys by this.
+ *
+ * @param source - The set's site.
+ * @param id - The set's id on that site.
+ * @returns The qualified key.
+ */
+export function coverageKey(source: 'mediux' | 'posterdb', id: string): string
 {
   return `${source}:${id}`
+}
+
+/**
+ * Coverage key of the set an applied record came from.
+ *
+ * @param r - The record.
+ * @returns The qualified key, or an empty string for a manual upload.
+ */
+function recordCoverageKey(r: AppliedRecord): string
+{
+  return r.setId ? coverageKey(r.source, r.setId) : ''
 }
 
 function coversUrl(job: ScheduledJob, url: string, creator?: string): boolean
@@ -982,26 +1000,36 @@ export function appliedByItem(records: AppliedRecord[]): Map<string, AppliedReco
   return index
 }
 
+/** A creator with art on record. */
+export interface AppliedUploader
+{
+  uploader: string
+  /** The site they publish on; the same name on the other site is someone else. */
+  source: 'mediux' | 'posterdb'
+  /** Items carrying their art. */
+  count: number
+}
+
 /**
  * Lists the creators whose art is on record, most-used first.
  *
  * @param records - Applied-poster history.
- * @returns Each creator with the number of items carrying their art.
+ * @returns Each creator, per site, with the number of items carrying their art.
  */
-export function appliedUploaders(records: AppliedRecord[]): Array<{ uploader: string; count: number }>
+export function appliedUploaders(records: AppliedRecord[]): AppliedUploader[]
 {
-  const items = new Map<string, { uploader: string; keys: Set<string> }>()
+  const items = new Map<string, { uploader: string; source: 'mediux' | 'posterdb'; keys: Set<string> }>()
   for (const r of records)
   {
     if (!r.uploader) continue
-    const k = r.uploader.toLowerCase()
+    const k = `${r.source}:${r.uploader.toLowerCase()}`
     let entry = items.get(k)
-    if (!entry) items.set(k, (entry = { uploader: r.uploader, keys: new Set() }))
+    if (!entry) items.set(k, (entry = { uploader: r.uploader, source: r.source, keys: new Set() }))
     entry.keys.add(r.itemKey)
   }
   return [...items.values()]
-    .map(e => ({ uploader: e.uploader, count: e.keys.size }))
-    .sort((a, b) => b.count - a.count || a.uploader.localeCompare(b.uploader))
+    .map(e => ({ uploader: e.uploader, source: e.source, count: e.keys.size }))
+    .sort((a, b) => b.count - a.count || a.uploader.localeCompare(b.uploader) || a.source.localeCompare(b.source))
 }
 
 /**
@@ -1023,7 +1051,7 @@ export function artFilterMatches(filter: LibraryArtFilter, records: AppliedRecor
     case 'uploader':
     {
       const wanted = filter.uploader.toLowerCase()
-      return records.some(r => r.uploader?.toLowerCase() === wanted)
+      return records.some(r => r.uploader?.toLowerCase() === wanted && (!filter.source || r.source === filter.source))
     }
     case 'unscheduled':
       return records.length > 0 && !records.some(r =>
@@ -1100,14 +1128,16 @@ export function posterSlot(p: Pick<PosterInfo, 'season' | 'episode'>): string
 /** Which sets have filled each slot on each item, for fill-gaps jobs. */
 export interface SlotCoverage
 {
-  /** Item key to the set ids (empty string when unknown) of slotless records. */
+  /** Item key to the set keys (empty string when unknown) of slotless records. */
   whole: Map<string, Set<string>>
-  /** Item key to slot to the set ids that filled it. */
+  /** Item key to slot to the set keys that filled it. */
   slots: Map<string, Map<string, Set<string>>>
 }
 
 /**
- * Indexes applied-poster history by item and slot.
+ * Indexes applied-poster history by item and slot. Sets are keyed by
+ * {@link coverageKey}, so a MediUX set and a ThePosterDB set that share an id
+ * stay two sets.
  *
  * @param records - Applied-poster history.
  * @returns The coverage index for {@link isSlotCovered}.
@@ -1117,12 +1147,12 @@ export function slotCoverage(records: AppliedRecord[]): SlotCoverage
   const coverage: SlotCoverage = { whole: new Map(), slots: new Map() }
   for (const r of records)
   {
-    const setId = r.setId ?? ''
+    const setKey = recordCoverageKey(r)
     if (!r.slots)
     {
       let sets = coverage.whole.get(r.itemKey)
       if (!sets) coverage.whole.set(r.itemKey, (sets = new Set()))
-      sets.add(setId)
+      sets.add(setKey)
       continue
     }
     let bySlot = coverage.slots.get(r.itemKey)
@@ -1131,7 +1161,7 @@ export function slotCoverage(records: AppliedRecord[]): SlotCoverage
     {
       let sets = bySlot.get(slot)
       if (!sets) bySlot.set(slot, (sets = new Set()))
-      sets.add(setId)
+      sets.add(setKey)
     }
   }
   return coverage
@@ -1143,15 +1173,15 @@ export function slotCoverage(records: AppliedRecord[]): SlotCoverage
  * @param coverage - Index from {@link slotCoverage}.
  * @param itemKey - Plex item.
  * @param slot - Slot from {@link posterSlot}.
- * @param setId - The set that filled it.
+ * @param setKey - The set that filled it, from {@link coverageKey}.
  */
-export function addSlotCoverage(coverage: SlotCoverage, itemKey: string, slot: string, setId?: string): void
+export function addSlotCoverage(coverage: SlotCoverage, itemKey: string, slot: string, setKey?: string): void
 {
   let bySlot = coverage.slots.get(itemKey)
   if (!bySlot) coverage.slots.set(itemKey, (bySlot = new Map()))
   let sets = bySlot.get(slot)
   if (!sets) bySlot.set(slot, (sets = new Set()))
-  sets.add(setId ?? '')
+  sets.add(setKey ?? '')
 }
 
 /**
@@ -1175,12 +1205,12 @@ export function posterKind(p: Pick<PosterInfo, 'season' | 'episode'>): 'poster' 
  * @param coverage - Index from {@link slotCoverage}.
  * @param itemKey - Plex item.
  * @param slot - Slot from {@link posterSlot}.
- * @param setId - The set the poster comes from.
+ * @param setKey - The set the poster comes from, from {@link coverageKey}.
  * @returns true when a different set has filled the slot.
  */
-export function isSlotCovered(coverage: SlotCoverage, itemKey: string, slot: string, setId?: string): boolean
+export function isSlotCovered(coverage: SlotCoverage, itemKey: string, slot: string, setKey?: string): boolean
 {
-  const own = setId ?? ''
+  const own = setKey ?? ''
   const other = (sets?: Set<string>) => !!sets && [...sets].some(s => s !== own)
   return other(coverage.whole.get(itemKey)) || other(coverage.slots.get(itemKey)?.get(slot))
 }

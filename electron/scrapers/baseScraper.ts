@@ -97,6 +97,7 @@ export async function sleepConfig(type: 'min' | 'batch' | 'initial' | 'pageWait'
 export abstract class BaseScraper {
   protected _browser: Browser | null = null
   protected _aborted = false
+  private _launching: Promise<Browser> | null = null
 
   /**
    * Scrapes a poster-set URL into a list of posters.
@@ -107,12 +108,15 @@ export abstract class BaseScraper {
   abstract scrape(url: string): Promise<PosterInfo[]>
 
   /**
-   * Returns the shared headless browser, launching it on first use.
+   * Returns the shared headless browser, launching it on first use. Parallel
+   * callers share one launch, so workers that all notice a dead browser at
+   * once do not each start their own.
    *
    * @returns The connected browser instance.
    */
   async getBrowser(): Promise<Browser> {
-    if (!this._browser || !this._browser.isConnected()) {
+    if (this._browser?.isConnected()) return this._browser
+    this._launching ??= (async () => {
       // PLEX_BROWSER_EXEC is set by PlaywrightService.setupEnv() - bypasses playwright's
       // internal registry lookup so we always use the managed browser in userData/browsers
       const executablePath = process.env.PLEX_BROWSER_EXEC
@@ -121,7 +125,7 @@ export abstract class BaseScraper {
           'Chromium browser is not installed. Open Settings → Browser Engine and click Install.',
         )
       }
-      this._browser = await chromium.launch({
+      const browser = await chromium.launch({
         headless: true,
         executablePath,
         args: [
@@ -131,8 +135,10 @@ export abstract class BaseScraper {
           '--disable-web-security',
         ],
       })
-    }
-    return this._browser
+      this._browser = browser
+      return browser
+    })().finally(() => { this._launching = null })
+    return this._launching
   }
 
   /**

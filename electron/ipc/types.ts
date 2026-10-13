@@ -484,8 +484,12 @@ export type LibraryArtFilter =
   | { kind: 'applied' }
   /** Titles whose applied art no scheduled job keeps updated. */
   | { kind: 'unscheduled' }
-  /** Titles with art applied from one MediUX creator. */
-  | { kind: 'uploader'; uploader: string }
+  /**
+   * Titles with art applied from one creator. The same name on MediUX and
+   * ThePosterDB is two people, so the site narrows it; without one, any site
+   * matches.
+   */
+  | { kind: 'uploader'; uploader: string; source?: SetSource }
 
 /**
  * Narrows a TV grid by whether a series is still going. Taken from TMDB when
@@ -514,6 +518,9 @@ export interface SectionItemsRes {
   total: number
 }
 
+/** The sites poster sets come from. */
+export type SetSource = 'mediux' | 'posterdb'
+
 /** One poster set available for a given title, with its uploader. */
 export interface PosterSetSummary {
   /**
@@ -524,7 +531,7 @@ export interface PosterSetSummary {
    */
   id: string
   /** Which site the set came from. */
-  source: 'mediux' | 'posterdb'
+  source: SetSource
   setName: string
   uploader: string
   uploaderAvatar?: string
@@ -553,6 +560,13 @@ export interface BrowseSetsReq {
    */
   title?: string
   year?: number
+  /**
+   * Sites to search; both when omitted. The panel asks each site on its own so
+   * the quick MediUX answer is not held back by the ThePosterDB walk.
+   */
+  sources?: SetSource[]
+  /** Skip remembered title matches (the panel's Refresh button). */
+  fresh?: boolean
 }
 
 export interface CollectionsReq {
@@ -566,6 +580,10 @@ export interface CollectionsReq {
 export interface CollectionSetsReq {
   collectionKey: string
   title: string
+  /** Sites to search; both when omitted. */
+  sources?: SetSource[]
+  /** Skip remembered title matches. */
+  fresh?: boolean
 }
 
 /** A set from a creator's page, with library-match info resolved. */
@@ -660,6 +678,15 @@ export interface BrowseSetsRes {
   tmdbMissing?: boolean
   /** Plex collection member movies (collection browse only). */
   collectionMembers?: LibraryItem[]
+  /**
+   * A site that was asked but could not answer, with the reason. Its sets are
+   * simply absent; the other site's results stand.
+   */
+  sourceErrors?: Partial<Record<SetSource, string>>
+  /** ThePosterDB lists more sets for the title than were read. */
+  posterdbCapped?: boolean
+  /** The title's page on ThePosterDB, to continue browsing there. */
+  posterdbUrl?: string
 }
 
 export interface PlexArtSlot {
