@@ -546,6 +546,14 @@ export interface PosterSetSummary {
   posters: PosterInfo[]
   /** Detected from the set's files (title cards/seasons imply a show). */
   mediaType?: 'movie' | 'show'
+  /** MediUX only: downloads summed over the set's files. ThePosterDB shows no count. */
+  downloads?: number
+  /**
+   * 0-based place among this title's sets from the same source, most
+   * downloaded first. ThePosterDB lists media pages by downloads, so its page
+   * order is the rank; MediUX ranks by `downloads`.
+   */
+  popularityRank?: number
 }
 
 export interface BrowseSetsReq {

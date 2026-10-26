@@ -57,6 +57,18 @@ const RANK: Record<CreatorState, number> = { followed: 0, none: 1, hidden: 2 }
  * @param opts - The panel's filter state and the creator lookup.
  * @returns What to render; `sets` is not modified.
  */
+/**
+ * Most downloaded first. The two sites' counts can't be compared (ThePosterDB
+ * shows none), so "All" alternates them: each site's #1, then each #2, and so
+ * on, MediUX first on a tie. Sets without a rank (older cache entries,
+ * collection browsing) keep the old alphabetical order after the ranked ones.
+ */
+export function byPopularity(a: PosterSetSummary, b: PosterSetSummary): number {
+  const ra = a.popularityRank ?? Infinity, rb = b.popularityRank ?? Infinity
+  if (ra !== rb) return ra < rb ? -1 : 1
+  return a.source.localeCompare(b.source) || a.uploader.localeCompare(b.uploader)
+}
+
 export function arrangeSets(sets: PosterSetSummary[], opts: ArrangeOptions): ArrangedSets {
   const sourceCounts: Record<SetSource, number> = { mediux: 0, posterdb: 0 }
   for (const s of sets) sourceCounts[s.source]++

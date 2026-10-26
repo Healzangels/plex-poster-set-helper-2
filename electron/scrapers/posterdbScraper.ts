@@ -904,7 +904,10 @@ export class PosterdbScraper extends BaseScraper {
     })
 
     const avatars = await avatarsP
+    // mapPool keeps input order, so the index is the set's place on the
+    // downloads-sorted media page.
     const sets = summaries
+      .map((s, i): PosterSetSummary | null => (s ? { ...s, popularityRank: i } : null))
       .filter((s): s is PosterSetSummary => s !== null && s.posters.length > 0)
       .map(s => {
         const avatar = avatars.get(s.uploader.toLowerCase())

@@ -964,7 +964,7 @@
 }
 
 .setPreview {
-  width: 56px;
+  width: 96px;
   flex-shrink: 0;
   align-self: flex-start;   /* keep the 2:3 ratio; never stretch to row height */
   aspect-ratio: 2 / 3;
@@ -1140,10 +1140,10 @@
 
 .groupThumbs {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
   gap: 5px;
 }
-.groupThumbsWide { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); }
+.groupThumbsWide { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
 
 .groupThumb {
   position: relative;
@@ -1163,24 +1163,24 @@
 
 /* Panel width tiers — respond to SetsPanel inline width, not viewport */
 @container sets-panel (min-width: 520px) {
-  .setPreview { width: 72px; }
-  .groupThumbs { grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); }
-  .groupThumbsWide { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+  .setPreview { width: 120px; }
+  .groupThumbs { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); }
+  .groupThumbsWide { grid-template-columns: repeat(auto-fill, minmax(136px, 1fr)); }
   .artStrip { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); }
   .artLabel { font-size: 10px; }
 }
 
 @container sets-panel (min-width: 720px) {
-  .setPreview { width: 88px; }
-  .groupThumbs { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); }
-  .groupThumbsWide { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
+  .setPreview { width: 144px; }
+  .groupThumbs { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
+  .groupThumbsWide { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
   .artStrip { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
   .panelBody { gap: var(--space-4); padding: var(--space-4); }
 }
 
 @container sets-panel (min-width: 880px) {
-  .setPreview { width: 104px; }
-  .groupThumbs { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); }
+  .setPreview { width: 168px; }
+  .groupThumbs { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
 }
 
 .epBadge {

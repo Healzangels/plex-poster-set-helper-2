@@ -57,6 +57,7 @@ interface MediuxFile {
   episode_id?:    EpisodeRef | null
   movie_id?:      MovieRef | null
   collection_id?: { id?: string | number; collection_name?: string } | null
+  downloads_func?: { count?: number | string } | null
 }
 
 interface UserCreated {
@@ -64,7 +65,7 @@ interface UserCreated {
   avatar?: string | { id?: string } | null
 }
 
-interface MediuxSet {
+export interface MediuxSet {
   id: number | string
   name?: string
   set_name?: string
@@ -483,9 +484,11 @@ function setToSummary(set: MediuxSet, allowed: Set<string>, fb: Fallback): Poste
   let posterCount = 0, backdropCount = 0, titleCardCount = 0
   let preview: string | undefined
   let hasEpisodic = false, hasMovieRef = false
+  let downloads = 0
   for (const f of set.files ?? []) {
+    downloads += Number(f.downloads_func?.count) || 0
     const ft = (f.fileType ?? '').toLowerCase().replace(/[-\s]/g, '_')
-    if (ft === 'poster') { posterCount++; if (!preview) preview = `${ASSET_BASE}/${f.id}?width=200&quality=80&format=webp` }
+    if (ft === 'poster') { posterCount++; if (!preview) preview = `${ASSET_BASE}/${f.id}?width=400&quality=80&format=webp` }
     else if (ft === 'backdrop') backdropCount++
     else if (ft === 'title_card') titleCardCount++
     if (ft === 'title_card' || f.episode_id != null || f.season_id != null || f.show_id != null) hasEpisodic = true
@@ -513,8 +516,41 @@ function setToSummary(set: MediuxSet, allowed: Set<string>, fb: Fallback): Poste
     titleCardCount,
     previewUrl: preview,
     posters,
+    downloads,
     ...(mediaType ? { mediaType } : {}),
   }
+}
+
+/**
+ * A set's own /sets/{id} page carries no download counts, so an enriched copy
+ * takes them from the browse page's files, matched by file id.
+ *
+ * @param full - The set as its own page lists it.
+ * @param original - The same set from the browse page.
+ * @returns `full`, its files carrying the browse page's counts.
+ */
+export function keepDownloads(full: MediuxSet, original: MediuxSet): MediuxSet {
+  const counts = new Map((original.files ?? []).map(f => [f.id, f.downloads_func]))
+  if (!full.files) return full
+  return {
+    ...full,
+    files: full.files.map(f => (f.downloads_func || !counts.get(f.id) ? f : { ...f, downloads_func: counts.get(f.id) })),
+  }
+}
+
+/**
+ * Numbers sets most downloaded first, keeping page order between equal counts.
+ *
+ * @param sets - One title's sets, in page order.
+ * @returns The same sets carrying popularityRank.
+ */
+export function rankByDownloads(sets: PosterSetSummary[]): PosterSetSummary[] {
+  const order = sets
+    .map((s, i) => ({ i, d: s.downloads ?? 0 }))
+    .sort((a, b) => b.d - a.d || a.i - b.i)
+  const rank = new Array<number>(sets.length)
+  order.forEach(({ i }, r) => { rank[i] = r })
+  return sets.map((s, i) => ({ ...s, popularityRank: rank[i] }))
 }
 
 /**
@@ -630,7 +666,8 @@ export class MediuxScraper extends BaseScraper {
       if (!needsEnrich) return s
       try {
         const full = await this._fetchSets(`https://mediux.pro/sets/${s.id}`)
-        const fullSet = full?.sets.find(x => String(x.id) === String(s.id))
+        const found = full?.sets.find(x => String(x.id) === String(s.id))
+        const fullSet = found && keepDownloads(found, s)
         if (fullSet?.files?.some(f => f.movie_id)) {
           Logger.scrape('MediUX', `Enriched collection set ${s.id} (${s.collection?.collection_name}) via /sets/${s.id}`)
           return fullSet
@@ -686,7 +723,7 @@ export class MediuxScraper extends BaseScraper {
     // ordinary sets and for collection sets that already carry movie_id.
     sets = await this._enrichCollectionSets(sets)
 
-    const summaries = sets.map(s => setToSummary(s, allTypes, fallback))
+    const summaries = rankByDownloads(sets.map(s => setToSummary(s, allTypes, fallback)))
     Logger.scrape('MediUX', `Browse: ${summaries.length} set(s) for ${type} ${tmdbId}`)
     return summaries
   }

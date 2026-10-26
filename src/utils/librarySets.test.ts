@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import type { PosterInfo, PosterSetSummary, SetSource } from '../../electron/ipc/types'
 import { ALL_TYPES, type FileType } from './posterGroups'
-import { arrangeSets, uploaderValue } from './librarySets'
+import { arrangeSets, byPopularity, uploaderValue } from './librarySets'
+import { keepDownloads, rankByDownloads, type MediuxSet } from '../../electron/scrapers/mediuxScraper'
 import type { CreatorState } from './creatorPrefs'
 
 function poster(extra: Partial<PosterInfo> = {}): PosterInfo
@@ -94,5 +95,50 @@ describe('arrangeSets', () =>
     expect(out.activeUploader).toBe('mediux:bob')
     expect(out.visibleSets.map(s => s.id)).toEqual(['2'])
     expect(out.hiddenCount).toBe(0)
+  })
+})
+
+describe('byPopularity', () => {
+  const ranked = (s: PosterSetSummary, popularityRank?: number): PosterSetSummary => ({ ...s, popularityRank })
+
+  it('puts the most downloaded first within a source, not the alphabetical first', () => {
+    const order = [ranked(alice, 1), ranked(bob, 0)].sort(byPopularity)
+    expect(order.map(s => s.uploader)).toEqual(['bob', 'alice'])
+  })
+
+  it('alternates the sources rank by rank, MediUX first on a tie', () => {
+    const order = [ranked(dave, 0), ranked(carol, 1), ranked(alice, 1), ranked(bob, 0)].sort(byPopularity)
+    expect(order.map(s => s.uploader)).toEqual(['bob', 'dave', 'alice', 'carol'])
+  })
+
+  it('keeps unranked sets after ranked ones, alphabetical among themselves', () => {
+    const order = [ranked(bob), ranked(dave, 3), ranked(alice)].sort(byPopularity)
+    expect(order.map(s => s.uploader)).toEqual(['dave', 'alice', 'bob'])
+  })
+})
+
+describe('rankByDownloads', () => {
+  it('ranks by downloads, page order breaking ties, without reordering the list', () => {
+    const withDl = (s: PosterSetSummary, downloads?: number): PosterSetSummary => ({ ...s, downloads })
+    const out = rankByDownloads([withDl(alice, 3), withDl(bob, 12), withDl(carol, 3), withDl(dave)])
+    expect(out.map(s => s.uploader)).toEqual(['alice', 'bob', 'carol', 'dave'])
+    expect(out.map(s => s.popularityRank)).toEqual([1, 0, 2, 3])
+  })
+})
+
+describe('keepDownloads', () => {
+  it("copies the browse page's counts onto a set re-read from its own page, by file id", () => {
+    const original: MediuxSet = { id: 7, files: [
+      { id: 'a', fileType: 'poster', downloads_func: { count: 56 } },
+      { id: 'b', fileType: 'poster', downloads_func: { count: 49 } },
+    ] }
+    const full: MediuxSet = { id: 7, files: [
+      { id: 'b', fileType: 'poster', movie_id: { id: '2' } },
+      { id: 'a', fileType: 'poster' },
+      { id: 'c', fileType: 'poster' },
+    ] }
+    const out = keepDownloads(full, original)
+    expect(out.files?.map(f => f.downloads_func?.count)).toEqual([49, 56, undefined])
+    expect(out.files?.[0].movie_id).toEqual({ id: '2' })
   })
 })

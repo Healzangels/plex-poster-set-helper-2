@@ -12,7 +12,7 @@ import Pager from '../../components/ui/Pager'
 import PlexConnectBanner from '../../components/ui/PlexConnectBanner'
 import { groupPosters, posterFileType, setKey, ALL_TYPES, SOURCE_LABEL, SOURCE_SHORT, defaultSetApplyScope, type FileType, type SetApplyScope, type SetSource } from '../../utils/posterGroups'
 import { useCreatorPrefs, parseCreatorInput, type CreatorState } from '../../utils/creatorPrefs'
-import { arrangeSets, uploaderValue } from '../../utils/librarySets'
+import { arrangeSets, byPopularity, uploaderValue } from '../../utils/librarySets'
 import { recordApplied, recordAppliedBatch, recordAppliedQuietly, appliedKey, loadAppliedIndex, type AppliedIndex } from '../../utils/appliedTracker'
 import { uuid } from '../../utils/uuid'
 import { errorMessage } from '../../utils/errorMessage'
@@ -1089,16 +1089,15 @@ function SetsPanel({ item, onClose, onItemPoster }: {
           sources, fresh: forced,
         })
 
-    // Alphabetical by uploader; followed/hidden ordering is applied live in
-    // visibleSets, so it follows a follow or hide without a reload.
-    const byUploader = (a: PosterSetSummary, b: PosterSetSummary) => a.uploader.localeCompare(b.uploader)
+    // Most downloaded first (byPopularity); followed/hidden ordering is applied
+    // live in visibleSets, so it follows a follow or hide without a reload.
     const results: Partial<Record<SetSource, BrowseSetsRes>> = {}
 
     const settle = (src: SetSource, res: BrowseSetsRes) => {
       if (cancelled) return
       results[src] = res
       setSourceErrors(prev => ({ ...prev, [src]: sourceFailure(src, res) }))
-      setSets(prev => [...prev.filter(s => s.source !== src), ...res.sets].sort(byUploader))
+      setSets(prev => [...prev.filter(s => s.source !== src), ...res.sets].sort(byPopularity))
       if (res.collectionMembers) setCollectionMembers(res.collectionMembers)
       if (src === 'mediux') {
         setResolvedTmdbId(res.tmdbId)
@@ -1126,7 +1125,7 @@ function SetsPanel({ item, onClose, onItemPoster }: {
       // A site that failed is retried on the next open rather than remembered.
       if (!Object.keys(failures).length) {
         browseSetsCache.set(key, {
-          sets: [...(m?.sets ?? []), ...(p?.sets ?? [])].sort(byUploader),
+          sets: [...(m?.sets ?? []), ...(p?.sets ?? [])].sort(byPopularity),
           tmdbId: m?.tmdbId,
           tmdbMissing: m?.tmdbMissing,
           collectionMembers: m?.collectionMembers ?? p?.collectionMembers,
@@ -1950,6 +1949,7 @@ function SetCard({ set, apply, onApply, enabledTypes, title, badge, disabled, cr
             {enabledTypes.has('poster')     && set.posterCount > 0    && <span className={styles.countBadge}>{set.posterCount} poster{set.posterCount !== 1 ? 's' : ''}</span>}
             {enabledTypes.has('title_card') && set.titleCardCount > 0 && <span className={styles.countBadge}>{set.titleCardCount} card{set.titleCardCount !== 1 ? 's' : ''}</span>}
             {enabledTypes.has('backdrop')   && set.backdropCount > 0  && <span className={styles.countBadge}>{set.backdropCount} backdrop{set.backdropCount !== 1 ? 's' : ''}</span>}
+            {set.downloads != null && <span className={styles.countBadge} title="Downloads on MediUX">{set.downloads.toLocaleString()} download{set.downloads !== 1 ? 's' : ''}</span>}
           </div>
 
           <div className={styles.setActions}>
